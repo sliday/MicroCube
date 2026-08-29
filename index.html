@@ -21,6 +21,7 @@ const SCALE = 4;
 const M = (metres) => metres * SCALE;
 
 const N = 512;
+const CELL = 16;
 const CHUNK = 32;
 const BLOCK = 4;
 const GROUND = M(18);
@@ -44,6 +45,9 @@ const REACH = M(45);
 const DIG_R = 7;
 
 const SUN = [0.42, 0.82, 0.38];
+const SUN_COLOR = [255, 246, 214];
+const SUN_COS = 0.9985;          // радиус диска: чем ближе к единице, тем мельче
+const SUN_GLOW = 0.96;           // где начинается ореол вокруг него
 const FOG_COLOR = [150, 170, 195];
 const SKY_TOP = [92, 132, 196];
 const SKY_HOR = [186, 206, 226];
@@ -54,19 +58,51 @@ let MAX_DIST = N / 2;
 let FOG_START = 0.83;
 let FOG_END = 1.0;
 let AMBIENT = 0.42;
+let SHADOW = true;
+let SHADOW_DIST = 100;
+let SHADOW_DARK = 0.45;
+let SHADOW_LOD = 1;
 let AO = true;
 let AO_STRENGTH = 0.6;
 
 // ─────────────────────────── WORLD ───────────────────────────
 const LMAX = Math.log2(N) | 0;
-const vox = new Uint8Array(N * N * N);
+const CL = Math.log2(CELL) | 0, CM = CELL - 1, CELL3 = CELL ** 3, NC = N / CELL;
 const lv = [null, ...Array.from({ length: LMAX }, (_, i) => new Uint8Array((N >> (i + 1)) ** 3))];
 let wox = -(N >> 1), woz = -(N >> 1);
 
-const idx = (x, y, z) => (z * N + y) * N + x;
+const pyrBytes = lv.reduce((s, a) => s + (a ? a.byteLength : 0), 0);
+const cellB = new Int32Array(NC ** 3).fill(-1);
+let blocks = new Uint8Array(CELL3 * 64);
+let blockCount = 0;
+const freeB = [];
+
+const cellAt = (x, y, z) => ((z >> CL) * NC + (y >> CL)) * NC + (x >> CL);
+const inCell = (x, y, z) => ((z & CM) * CELL + (y & CM)) * CELL + (x & CM);
 const inBox = (x, y, z) => (x | y | z) >= 0 && x < N && y < N && z < N;
 
-const nodeGet = (L, i) => (L === 0 ? (vox[i] !== 0 ? 1 : 0) : lv[L][i]);
+const allocCell = (c) => {
+  const b = freeB.length ? freeB.pop() : blockCount++;
+  if((b + 1) * CELL3 > blocks.length) {
+    const grown = new Uint8Array(blocks.length * 2);
+    grown.set(blocks);
+    blocks = grown;
+  }
+  blocks.fill(0, b * CELL3, (b + 1) * CELL3);
+  return cellB[c] = b;
+};
+
+const voxAt = (x, y, z) => {
+  const b = cellB[cellAt(x, y, z)];
+  return b < 0 ? 0 : blocks[b * CELL3 + inCell(x, y, z)];
+};
+const voxSet = (x, y, z, t) => {
+  const c = cellAt(x, y, z);
+  let b = cellB[c];
+  if(b < 0) { if(t === 0) return; b = allocCell(c); }
+  blocks[b * CELL3 + inCell(x, y, z)] = t;
+};
+const getVox = (x, y, z) => inBox(x, y, z) ? voxAt(x, y, z) : 0;
 
 const reduceBox = (x0, y0, z0, x1, y1, z1) => {
   x0 = Math.max(0, x0); y0 = Math.max(0, y0); z0 = Math.max(0, z0);
@@ -75,16 +111,19 @@ const reduceBox = (x0, y0, z0, x1, y1, z1) => {
     x0 >>= 1; y0 >>= 1; z0 >>= 1; x1 >>= 1; y1 >>= 1; z1 >>= 1;
     const n = N >> L, cn = N >> (L - 1);
     for(let z = z0; z <= z1; z++) for(let y = y0; y <= y1; y++) for(let x = x0; x <= x1; x++) {
-      const c = ((2 * z * cn) + 2 * y) * cn + 2 * x, p = cn * cn;
-      lv[L][(z * n + y) * n + x] = (nodeGet(L - 1, c) || nodeGet(L - 1, c + 1)
-        || nodeGet(L - 1, c + cn) || nodeGet(L - 1, c + cn + 1)
-        || nodeGet(L - 1, c + p) || nodeGet(L - 1, c + p + 1)
-        || nodeGet(L - 1, c + p + cn) || nodeGet(L - 1, c + p + cn + 1)) ? 1 : 0;
+      let any;
+      if(L === 1) {
+        const px = 2 * x, py = 2 * y, pz = 2 * z;
+        any = voxAt(px, py, pz) || voxAt(px + 1, py, pz) || voxAt(px, py + 1, pz) || voxAt(px + 1, py + 1, pz)
+          || voxAt(px, py, pz + 1) || voxAt(px + 1, py, pz + 1) || voxAt(px, py + 1, pz + 1) || voxAt(px + 1, py + 1, pz + 1);
+      } else {
+        const c = ((2 * z * cn) + 2 * y) * cn + 2 * x, p = cn * cn, d = lv[L - 1];
+        any = d[c] || d[c + 1] || d[c + cn] || d[c + cn + 1] || d[c + p] || d[c + p + 1] || d[c + p + cn] || d[c + p + cn + 1];
+      }
+      lv[L][(z * n + y) * n + x] = any ? 1 : 0;
     }
   }
 };
-
-const getVox = (x, y, z) => inBox(x, y, z) ? vox[idx(x, y, z)] : 0;
 
 const sphereEdit = (cx, cy, cz, r, t) => {
   const R = Math.ceil(r) + 1;
@@ -94,10 +133,9 @@ const sphereEdit = (cx, cy, cz, r, t) => {
     if(dx * dx + dy * dy + dz * dz > r2) continue;
     const x = x0 + dx, y = y0 + dy, z = z0 + dz;
     if(!inBox(x, y, z)) continue;
-    const i = idx(x, y, z);
-    if(t === 0) { if(vox[i] === 0) continue; }
-    else if(vox[i] !== 0) continue;
-    vox[i] = t;
+    const v = voxAt(x, y, z);
+    if(t === 0 ? v === 0 : v !== 0) continue;
+    voxSet(x, y, z, t);
   }
   reduceBox(x0 - R, y0 - R, z0 - R, x0 + R, y0 + R, z0 + R);
 };
@@ -150,9 +188,10 @@ const genColumn = (x, z) => {
   const wx = wox + x, wz = woz + z;
   const h = blockTop(wx, wz);
   const bx = Math.floor(wx / BLOCK), bz = Math.floor(wz / BLOCK);
-  let cave = 1, isle = 0, isleTop = false;
+  let cave = 1, isle = 0, isleTop = false, cy = -1, b = -1;
   for(let y = 0; y < N; y++) {
     let t = 0;
+    if((y >> CL) !== cy) { cy = y >> CL; b = cellB[cellAt(x, y, z)]; }
     if(y % BLOCK === 0) {
       if(y < h) cave = Math.abs(noise3(wx / CAVE_SIZE, y / CAVE_SIZE, wz / CAVE_SIZE, 41) - 0.5);
       else { isle = isleAt(wx, y, wz); isleTop = isle > ISLE_AMOUNT && isleAt(wx, y + BLOCK, wz) <= ISLE_AMOUNT; }
@@ -169,8 +208,8 @@ const genColumn = (x, z) => {
       t = pick(m, bx, by, bz);
       if(hash2(wx * 3, wz * 5, y) > 0.82) t = base(m) + (t - base(m) + 1) % SHADES;
     }
-    const i = idx(x, y, z);
-    vox[i] = t;
+    if(t !== 0 && b < 0) b = allocCell(cellAt(x, y, z));
+    if(b >= 0) blocks[b * CELL3 + inCell(x, y, z)] = t;
   }
 };
 const pending = [];
@@ -179,21 +218,27 @@ const shiftWorld = (dx, dz) => {
   const axis = dx ? 0 : 2;
   let topRebuild = 1;
 
-  const moveGrid = (arr, n, step) => {
+  const moveGrid = (arr, n, step, blank = 0) => {
     if(axis === 0) {
       for(let z = 0; z < n; z++) for(let y = 0; y < n; y++) {
         const row = (z * n + y) * n;
-        if(s > 0) { arr.copyWithin(row, row + step, row + n); arr.fill(0, row + n - step, row + n); }
-        else { arr.copyWithin(row + step, row, row + n - step); arr.fill(0, row, row + step); }
+        if(s > 0) { arr.copyWithin(row, row + step, row + n); arr.fill(blank, row + n - step, row + n); }
+        else { arr.copyWithin(row + step, row, row + n - step); arr.fill(blank, row, row + step); }
       }
     } else {
       const plane = n * n;
-      if(s > 0) { arr.copyWithin(0, step * plane, n * plane); arr.fill(0, (n - step) * plane, n * plane); }
-      else { arr.copyWithin(step * plane, 0, (n - step) * plane); arr.fill(0, 0, step * plane); }
+      if(s > 0) { arr.copyWithin(0, step * plane, n * plane); arr.fill(blank, (n - step) * plane, n * plane); }
+      else { arr.copyWithin(step * plane, 0, (n - step) * plane); arr.fill(blank, 0, step * plane); }
     }
   };
 
-  moveGrid(vox, N, CHUNK);
+  const stepC = CHUNK / CELL;
+  for(let z = 0; z < NC; z++) for(let y = 0; y < NC; y++) for(let x = 0; x < NC; x++) {
+    const gone = axis === 0 ? (s > 0 ? x < stepC : x >= NC - stepC) : (s > 0 ? z < stepC : z >= NC - stepC);
+    const c = (z * NC + y) * NC + x;
+    if(gone && cellB[c] >= 0) { freeB.push(cellB[c]); cellB[c] = -1; }
+  }
+  moveGrid(cellB, NC, stepC, -1);
   for(let L = 1; L <= LMAX; L++) {
     const step = CHUNK >> L;
     if(step < 1 || (step << L) !== CHUNK) { topRebuild = L; break; }
@@ -201,13 +246,11 @@ const shiftWorld = (dx, dz) => {
     topRebuild = L + 1;
   }
   for(let L = topRebuild; L <= LMAX; L++) {
-    const n = N >> L, cn = N >> (L - 1);
+    const n = N >> L, cn = N >> (L - 1), d = lv[L - 1], p = cn * cn;
     for(let z = 0; z < n; z++) for(let y = 0; y < n; y++) for(let x = 0; x < n; x++) {
-      const c = ((2 * z * cn) + 2 * y) * cn + 2 * x, p = cn * cn;
-      lv[L][(z * n + y) * n + x] = (nodeGet(L - 1, c) || nodeGet(L - 1, c + 1)
-        || nodeGet(L - 1, c + cn) || nodeGet(L - 1, c + cn + 1)
-        || nodeGet(L - 1, c + p) || nodeGet(L - 1, c + p + 1)
-        || nodeGet(L - 1, c + p + cn) || nodeGet(L - 1, c + p + cn + 1)) ? 1 : 0;
+      const c = ((2 * z * cn) + 2 * y) * cn + 2 * x;
+      lv[L][(z * n + y) * n + x] = (d[c] || d[c + 1] || d[c + cn] || d[c + cn + 1]
+        || d[c + p] || d[c + p + 1] || d[c + p + cn] || d[c + p + cn + 1]) ? 1 : 0;
     }
   }
 
@@ -280,7 +323,7 @@ const snapHit = (ox, oy, oz, idx1, idy1, idz1, t0) => {
     const ny = iy - (axis === 1 ? (idy1 > 0 ? 1 : -1) : 0);
     const nz = iz - (axis === 2 ? (idz1 > 0 ? 1 : -1) : 0);
     if(!inBox(nx, ny, nz)) break;
-    if(vox[idx(nx, ny, nz)] === 0) break;
+    if(voxAt(nx, ny, nz) === 0) break;
     ix = nx; iy = ny; iz = nz;
   }
   st.vx = ix; st.vy = iy; st.vz = iz;
@@ -299,7 +342,7 @@ const clipBox = (ox, oy, oz, dx, dy, dz) => {
   return true;
 };
 
-const trace = (ox, oy, oz, dx, dy, dz, tMax) => {
+const trace = (ox, oy, oz, dx, dy, dz, tMax, stopL = 0) => {
   st.t = 0; st.type = 0;
   if(!clipBox(ox, oy, oz, dx, dy, dz)) return false;
   let t = st.clipT0;
@@ -314,8 +357,8 @@ const trace = (ox, oy, oz, dx, dy, dz, tMax) => {
     let v = 0;
     for(;;) {
       const n = N >> L;
-      v = nodeGet(L, (((iz >> L) * n + (iy >> L)) * n + (ix >> L)));
-      if(v === 0 || L === 0) break;
+      v = L === 0 ? voxAt(ix, iy, iz) : lv[L][((iz >> L) * n + (iy >> L)) * n + (ix >> L)];
+      if(v === 0 || L === stopL) break;
       L--;
     }
     if(v === 0) {
@@ -323,9 +366,10 @@ const trace = (ox, oy, oz, dx, dy, dz, tMax) => {
       L = Math.min(LMAX, L + 1);
       continue;
     }
+    if(stopL > 0) { st.t = t; return true; }        // грубый луч: нужен только сам факт помехи
     st.t = t; st.vx = ix; st.vy = iy; st.vz = iz;
     snapHit(ox, oy, oz, idx1, idy1, idz1, st.clipT0);
-    st.type = vox[idx(st.vx, st.vy, st.vz)];
+    st.type = voxAt(st.vx, st.vy, st.vz);
     const a = st.axis;
     st.nx = a === 0 ? (dx > 0 ? -1 : 1) : 0;
     st.ny = a === 1 ? (dy > 0 ? -1 : 1) : 0;
@@ -444,12 +488,16 @@ const render = () => {
       let r, g, b;
       if(trace(ex, ey, ez, dx, dy, dz, MAX_DIST)) {
         const c = PAL[st.type];
-        const lam = Math.max(0, st.nx * sx + st.ny * sy2 + st.nz * sz);
+        const ht = st.t, nx = st.nx, ny = st.ny, nz = st.nz;
+        const hx = ex + dx * ht, hy = ey + dy * ht, hz = ez + dz * ht;
+        const lam = Math.max(0, nx * sx + ny * sy2 + nz * sz);
         let k = AMBIENT + (1 - AMBIENT) * lam;
-        k *= st.ny > 0 ? 1 : (st.ny < 0 ? 0.62 : (st.nx ? 0.82 : 0.9));
-        if(AO) k *= voxAO(ex + dx * st.t, ey + dy * st.t, ez + dz * st.t, st.nx, st.ny, st.nz);
+        k *= ny > 0 ? 1 : (ny < 0 ? 0.62 : (nx ? 0.82 : 0.9));
+        if(AO) k *= voxAO(hx, hy, hz, nx, ny, nz);
+        // тень: второй луч к солнцу из точки попадания, приподнятой над гранью
+        if(SHADOW && lam > 0 && trace(hx + nx * 0.03, hy + ny * 0.03, hz + nz * 0.03, sx, sy2, sz, SHADOW_DIST, SHADOW_LOD)) k *= SHADOW_DARK;
         r = c[0] * k; g = c[1] * k; b = c[2] * k;
-        const f = Math.min(1, Math.max(0, (st.t - fogA) / (fogB - fogA)));
+        const f = Math.min(1, Math.max(0, (ht - fogA) / (fogB - fogA)));
         r += (fr - r) * f; g += (fg - g) * f; b += (fb - b) * f;
       } else {
         const k = Math.max(0, Math.min(1, dy * 1.6 + 0.15));
@@ -458,6 +506,10 @@ const render = () => {
         b = SKY_HOR[2] + (SKY_TOP[2] - SKY_HOR[2]) * k;
         const hz = Math.max(0, 1 - Math.abs(dy) * 6);
         r += (fr - r) * hz; g += (fg - g) * hz; b += (fb - b) * hz;
+        // солнце: диск плюс мягкий ореол вокруг него
+        const sd = dx * sx + dy * sy2 + dz * sz;
+        const lit = Math.min(1, (sd > SUN_COS ? 1 : 0) + Math.max(0, (sd - SUN_GLOW) / (1 - SUN_GLOW)) ** 4);
+        if(lit > 0) { r += (SUN_COLOR[0] - r) * lit; g += (SUN_COLOR[1] - g) * lit; b += (SUN_COLOR[2] - b) * lit; }
       }
       buf[py * RW + px] = 0xFF000000 | ((b | 0) << 16) | ((g | 0) << 8) | (r | 0);
     }
@@ -507,7 +559,8 @@ const render = () => {
     if(now - hudT > 250) {
       hudT = now;
       hud.textContent =
-        `${RW}×${RH} · ${(RW * RH)} rays · cube ${N}³ · ${fps |0 } fps · frame ${renderMs.toFixed(1)} ms\n`
+        `${RW}×${RH} · ${(RW * RH)} rays · cube ${N}³ · ${fps |0 } fps · frame ${renderMs.toFixed(1)} ms\n` +
+        `voxels ${(((blockCount - freeB.length) * CELL3 + cellB.byteLength) / 1048576).toFixed(1)} MB · pyramid ${(pyrBytes / 1048576).toFixed(1)} MB\n`
     }
     requestAnimationFrame(frame);
   };
@@ -516,11 +569,19 @@ const render = () => {
     get RES_H() { return RES_H; }, set RES_H(v) { RES_H = v; },
     get FOV_DEG() { return FOV_DEG; }, set FOV_DEG(v) { FOV_DEG = v; },
     get MAX_DIST() { return MAX_DIST; }, set MAX_DIST(v) { MAX_DIST = v; },
+    get SHADOW() { return SHADOW; }, set SHADOW(v) { SHADOW = v; },
+    get SHADOW_DIST() { return SHADOW_DIST; }, set SHADOW_DIST(v) { SHADOW_DIST = v; },
+    get SHADOW_DARK() { return SHADOW_DARK; }, set SHADOW_DARK(v) { SHADOW_DARK = v; },
+    get SHADOW_LOD() { return SHADOW_LOD; }, set SHADOW_LOD(v) { SHADOW_LOD = v; },
   };
   const pane = new Pane({ container: document.getElementById('panel'), title: 'MicroCube' });
   pane.addBinding(knobs, 'RES_H', { label: 'resolution', min: 60, max: 400, step: 10 }).on('change', resize);
   pane.addBinding(knobs, 'FOV_DEG', { label: 'fov', min: 40, max: 110, step: 1 });
   pane.addBinding(knobs, 'MAX_DIST', { label: 'far', min: 40, max: N / 2, step: 10 });
+  pane.addBinding(knobs, 'SHADOW', { label: 'shadows' });
+  pane.addBinding(knobs, 'SHADOW_DIST', { label: 'shadow far', min: 8, max: N / 2, step: 8 });
+  pane.addBinding(knobs, 'SHADOW_DARK', { label: 'shadow dark', min: 0.1, max: 1, step: 0.05 });
+  pane.addBinding(knobs, 'SHADOW_LOD', { label: 'shadow lod', min: 0, max: 4, step: 1 });
   pane.addButton({ title: '@vseplet' }).on('click', () => open('https://x.com/vseplet', '_blank'));
 
   resize();
