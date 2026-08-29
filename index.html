@@ -1,0 +1,533 @@
+<html>
+<head>
+<title>MicroCube @vseplet</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0c10; color: #dfe6f2; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #cv { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; cursor: crosshair; }
+  #hud { position: fixed; left: 8px; top: 6px; font: 12px/1.4 monospace; white-space: pre; text-shadow: 0 0 3px #000, 0 0 3px #000; pointer-events: none; }
+  #aim { position: fixed; left: 50%; top: 50%; width: 9px; height: 9px; margin: -5px 0 0 -5px; pointer-events: none;
+         border: 1px solid rgba(255,255,255,.85); border-radius: 50%; mix-blend-mode: difference; }
+  #panel { position: fixed; right: 8px; top: 8px; width: 270px; }
+  body.clean #panel, body.clean #hud { display: none; }
+</style>
+</head>
+<div>
+<canvas id="cv"></canvas><div id="hud"></div><div id="aim"></div><div id="panel"></div>
+<script type="module">
+import { Pane } from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
+
+// ─────────────────────────── SETTINGS ───────────────────────────
+const SCALE = 4;
+const M = (metres) => metres * SCALE;
+
+const N = 512;
+const CHUNK = 32;
+const BLOCK = 4;
+const GROUND = M(18);
+const HILLS = M(8);
+const CAVE_SIZE = M(9);
+const CAVE_WIDTH = 0.045;
+const ISLE_Y = M(40);
+const ISLE_SIZE = M(20);
+const ISLE_AMOUNT = 0.7;
+const LOAD_BUDGET_MS = 3;
+const SEED = 7;
+
+const MOVE_SPEED = M(4.5);
+const RUN_MULT = 1.9;
+const JUMP_V = M(9.9);
+const GRAVITY = M(26);
+const EYE = M(1.62);
+const PLAYER_R = M(0.32);
+const MOUSE_SENS = 0.0022;
+const REACH = M(45);
+const DIG_R = 7;
+
+const SUN = [0.42, 0.82, 0.38];
+const FOG_COLOR = [150, 170, 195];
+const SKY_TOP = [92, 132, 196];
+const SKY_HOR = [186, 206, 226];
+
+let RES_H = 160;
+let FOV_DEG = 70;
+let MAX_DIST = N / 2;
+let FOG_START = 0.83;
+let FOG_END = 1.0;
+let AMBIENT = 0.42;
+let AO = true;
+let AO_STRENGTH = 0.6;
+
+// ─────────────────────────── WORLD ───────────────────────────
+const LMAX = Math.log2(N) | 0;
+const vox = new Uint8Array(N * N * N);
+const lv = [null, ...Array.from({ length: LMAX }, (_, i) => new Uint8Array((N >> (i + 1)) ** 3))];
+let wox = -(N >> 1), woz = -(N >> 1);
+
+const idx = (x, y, z) => (z * N + y) * N + x;
+const inBox = (x, y, z) => (x | y | z) >= 0 && x < N && y < N && z < N;
+
+const nodeGet = (L, i) => (L === 0 ? (vox[i] !== 0 ? 1 : 0) : lv[L][i]);
+
+const reduceBox = (x0, y0, z0, x1, y1, z1) => {
+  x0 = Math.max(0, x0); y0 = Math.max(0, y0); z0 = Math.max(0, z0);
+  x1 = Math.min(N - 1, x1); y1 = Math.min(N - 1, y1); z1 = Math.min(N - 1, z1);
+  for(let L = 1; L <= LMAX; L++) {
+    x0 >>= 1; y0 >>= 1; z0 >>= 1; x1 >>= 1; y1 >>= 1; z1 >>= 1;
+    const n = N >> L, cn = N >> (L - 1);
+    for(let z = z0; z <= z1; z++) for(let y = y0; y <= y1; y++) for(let x = x0; x <= x1; x++) {
+      const c = ((2 * z * cn) + 2 * y) * cn + 2 * x, p = cn * cn;
+      lv[L][(z * n + y) * n + x] = (nodeGet(L - 1, c) || nodeGet(L - 1, c + 1)
+        || nodeGet(L - 1, c + cn) || nodeGet(L - 1, c + cn + 1)
+        || nodeGet(L - 1, c + p) || nodeGet(L - 1, c + p + 1)
+        || nodeGet(L - 1, c + p + cn) || nodeGet(L - 1, c + p + cn + 1)) ? 1 : 0;
+    }
+  }
+};
+
+const getVox = (x, y, z) => inBox(x, y, z) ? vox[idx(x, y, z)] : 0;
+
+const sphereEdit = (cx, cy, cz, r, t) => {
+  const R = Math.ceil(r) + 1;
+  const x0 = Math.round(cx), y0 = Math.round(cy), z0 = Math.round(cz);
+  const r2 = r * r;
+  for(let dz = -R; dz <= R; dz++) for(let dy = -R; dy <= R; dy++) for(let dx = -R; dx <= R; dx++) {
+    if(dx * dx + dy * dy + dz * dz > r2) continue;
+    const x = x0 + dx, y = y0 + dy, z = z0 + dz;
+    if(!inBox(x, y, z)) continue;
+    const i = idx(x, y, z);
+    if(t === 0) { if(vox[i] === 0) continue; }
+    else if(vox[i] !== 0) continue;
+    vox[i] = t;
+  }
+  reduceBox(x0 - R, y0 - R, z0 - R, x0 + R, y0 + R, z0 + R);
+};
+
+// ─────────────────────────── TERRAIN ───────────────────────────
+const hash2 = (x, z, s) => {
+  let h = Math.imul(x | 0, 374761393) + Math.imul(z | 0, 668265263) + Math.imul(s | 0, 1274126177);
+  h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+};
+const vnoise = (x, z, s) => {
+  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx), uz = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz, s), b = hash2(ix + 1, iz, s), c = hash2(ix, iz + 1, s), d = hash2(ix + 1, iz + 1, s);
+  return (a + (b - a) * ux) * (1 - uz) + (c + (d - c) * ux) * uz;
+};
+
+const noise3 = (x, y, z, s) => {
+  const iy = Math.floor(y), f = y - iy, u = f * f * (3 - 2 * f);
+  return vnoise(x, z, s + iy * 37) * (1 - u) + vnoise(x, z, s + (iy + 1) * 37) * u;
+};
+
+const MATS = 14, SHADES = 3;
+const PAL = [[0, 0, 0]];
+for(let m = 0; m < MATS; m++) {
+  const u = m / (MATS - 1);
+  const hue = 0.32 - u * 0.30, sat = 0.16 + 0.24 * Math.abs(Math.sin(m * 1.7)), val = 0.40 + 0.34 * u;
+  for(let s = 0; s < SHADES; s++) {
+    const v = val * (0.86 + s * 0.14), c = v * sat, x = c * (1 - Math.abs((hue * 6) % 2 - 1));
+    const rgb = hue < 1 / 6 ? [c, x, 0] : hue < 1 / 3 ? [x, c, 0] : [0, c, x];
+    PAL.push(rgb.map((q) => Math.round((q + v - c) * 255)));
+  }
+}
+const base = (m) => 1 + m * SHADES;
+const pick = (m, x, y, z) => base(m) + ((hash2(x * 7 + y, z * 13 + y, 5) * SHADES) | 0);
+
+const heightAt = (wx, wz) => {
+  const n = vnoise(wx / (12 * SCALE), wz / (12 * SCALE), SEED) * 0.55
+    + vnoise(wx / (5 * SCALE), wz / (5 * SCALE), SEED + 1) * 0.3
+    + vnoise(wx / (2 * SCALE), wz / (2 * SCALE), SEED + 2) * 0.15;
+  const ridge = 1 - Math.abs(vnoise(wx / (22 * SCALE), wz / (22 * SCALE), SEED + 3) * 2 - 1);
+  return Math.round(GROUND + (n - 0.5) * HILLS * 2 + ridge * ridge * HILLS * 0.8);
+};
+const blockTop = (wx, wz) => Math.round(heightAt(wx, wz) / BLOCK) * BLOCK;
+
+const isleAt = (wx, y, wz) => Math.abs(y - ISLE_Y) > ISLE_SIZE * 1.4 ? 0
+  : noise3(wx / ISLE_SIZE, y / (ISLE_SIZE * 0.6), wz / ISLE_SIZE, 53) - Math.abs(y - ISLE_Y) / (ISLE_SIZE * 1.4);
+
+const genColumn = (x, z) => {
+  const wx = wox + x, wz = woz + z;
+  const h = blockTop(wx, wz);
+  const bx = Math.floor(wx / BLOCK), bz = Math.floor(wz / BLOCK);
+  let cave = 1, isle = 0, isleTop = false;
+  for(let y = 0; y < N; y++) {
+    let t = 0;
+    if(y % BLOCK === 0) {
+      if(y < h) cave = Math.abs(noise3(wx / CAVE_SIZE, y / CAVE_SIZE, wz / CAVE_SIZE, 41) - 0.5);
+      else { isle = isleAt(wx, y, wz); isleTop = isle > ISLE_AMOUNT && isleAt(wx, y + BLOCK, wz) <= ISLE_AMOUNT; }
+    }
+    const solid = y < h ? !(cave < CAVE_WIDTH && (y < h - BLOCK * 2 || cave < CAVE_WIDTH * 0.35)) : isle > ISLE_AMOUNT;
+    if(solid) {
+      const depthBlocks = y < h ? Math.floor((h - 1 - y) / BLOCK) : (isleTop ? 0 : 2);
+      const by = Math.floor(y / BLOCK);
+      const lvl = (h - GROUND + HILLS) / (2 * HILLS) + (vnoise(wx / (6 * SCALE), wz / (6 * SCALE), 31) - 0.5) * 0.28;
+      const band = vnoise(wx / (40 * SCALE), wz / (40 * SCALE), 21) * 6 + y / (2.5 * SCALE);
+      const m = depthBlocks === 0 ? Math.max(0, Math.min(MATS - 1, (lvl * MATS) | 0))
+        : depthBlocks === 1 ? Math.max(0, Math.min(MATS - 1, (lvl * MATS) | 0) - 1)
+        : (Math.floor(band) % MATS + MATS) % MATS;
+      t = pick(m, bx, by, bz);
+      if(hash2(wx * 3, wz * 5, y) > 0.82) t = base(m) + (t - base(m) + 1) % SHADES;
+    }
+    const i = idx(x, y, z);
+    vox[i] = t;
+  }
+};
+const pending = [];
+const shiftWorld = (dx, dz) => {
+  const s = dx ? Math.sign(dx) : Math.sign(dz);
+  const axis = dx ? 0 : 2;
+  let topRebuild = 1;
+
+  const moveGrid = (arr, n, step) => {
+    if(axis === 0) {
+      for(let z = 0; z < n; z++) for(let y = 0; y < n; y++) {
+        const row = (z * n + y) * n;
+        if(s > 0) { arr.copyWithin(row, row + step, row + n); arr.fill(0, row + n - step, row + n); }
+        else { arr.copyWithin(row + step, row, row + n - step); arr.fill(0, row, row + step); }
+      }
+    } else {
+      const plane = n * n;
+      if(s > 0) { arr.copyWithin(0, step * plane, n * plane); arr.fill(0, (n - step) * plane, n * plane); }
+      else { arr.copyWithin(step * plane, 0, (n - step) * plane); arr.fill(0, 0, step * plane); }
+    }
+  };
+
+  moveGrid(vox, N, CHUNK);
+  for(let L = 1; L <= LMAX; L++) {
+    const step = CHUNK >> L;
+    if(step < 1 || (step << L) !== CHUNK) { topRebuild = L; break; }
+    moveGrid(lv[L], N >> L, step);
+    topRebuild = L + 1;
+  }
+  for(let L = topRebuild; L <= LMAX; L++) {
+    const n = N >> L, cn = N >> (L - 1);
+    for(let z = 0; z < n; z++) for(let y = 0; y < n; y++) for(let x = 0; x < n; x++) {
+      const c = ((2 * z * cn) + 2 * y) * cn + 2 * x, p = cn * cn;
+      lv[L][(z * n + y) * n + x] = (nodeGet(L - 1, c) || nodeGet(L - 1, c + 1)
+        || nodeGet(L - 1, c + cn) || nodeGet(L - 1, c + cn + 1)
+        || nodeGet(L - 1, c + p) || nodeGet(L - 1, c + p + 1)
+        || nodeGet(L - 1, c + p + cn) || nodeGet(L - 1, c + p + cn + 1)) ? 1 : 0;
+    }
+  }
+
+  if(axis === 0) wox += s * CHUNK; else woz += s * CHUNK;
+
+  for(let i = pending.length - 1; i >= 0; i--) {
+    const j = pending[i];
+    if(axis === 0) { j.x0 -= s * CHUNK; j.x1 -= s * CHUNK; j.x -= s * CHUNK; } else { j.z0 -= s * CHUNK; j.z1 -= s * CHUNK; j.z -= s * CHUNK; }
+    if(j.x1 <= 0 || j.z1 <= 0 || j.x0 >= N || j.z0 >= N) { pending.splice(i, 1); continue; }
+    const cx0 = Math.max(0, j.x0), cz0 = Math.max(0, j.z0);
+    if(cx0 !== j.x0 || cz0 !== j.z0 || j.x1 > N || j.z1 > N) {
+      j.x0 = cx0; j.z0 = cz0; j.x1 = Math.min(N, j.x1); j.z1 = Math.min(N, j.z1);
+      j.x = j.x0; j.z = j.z0;
+    } else if(j.x < j.x0 || j.z < j.z0) { j.x = j.x0; j.z = j.z0; }
+  }
+
+  const from = s > 0 ? N - CHUNK : 0;
+  const job = axis === 0
+    ? { x0: from, z0: 0, x1: from + CHUNK, z1: N }
+    : { x0: 0, z0: from, x1: N, z1: from + CHUNK };
+  job.x = job.x0; job.z = job.z0;
+  pending.push(job);
+};
+const pumpPending = (budgetMs) => {
+  if(!pending.length) return;
+  if(pending.length > 1) budgetMs *= pending.length;
+  const t0 = performance.now();
+  while(pending.length && performance.now() - t0 < budgetMs) {
+    const job = pending[0];
+    const z0 = job.z;
+    let count = 0;
+    while(job.z < job.z1 && count < 256) {
+      genColumn(job.x, job.z);
+      count++;
+      if(++job.x >= job.x1) { job.x = job.x0; job.z++; }
+    }
+    reduceBox(job.x0, 0, z0, job.x1, N - 1, Math.min(job.z1, job.z + 1));
+    if(job.z >= job.z1) pending.shift();
+  }
+};
+
+// ─────────────────────────── RAYCAST ───────────────────────────
+const st = { t: 0, axis: 0, vx: 0, vy: 0, vz: 0, type: 0, nx: 0, ny: 0, nz: 0, clipT0: 0, clipT1: 0 };
+const EPS = 1e-5;
+
+const exitFast = (ox, oy, oz, idx1, idy1, idz1, size, ix, iy, iz) => {
+  const bx = ix * size, by = iy * size, bz = iz * size;
+  let tx = Infinity, ty = Infinity, tz = Infinity;
+  if(idx1 > 0) tx = (bx + size - ox) * idx1; else if(idx1 < 0) tx = (bx - ox) * idx1;
+  if(idy1 > 0) ty = (by + size - oy) * idy1; else if(idy1 < 0) ty = (by - oy) * idy1;
+  if(idz1 > 0) tz = (bz + size - oz) * idz1; else if(idz1 < 0) tz = (bz - oz) * idz1;
+  let t = tx, axis = 0;
+  if(ty < t) { t = ty; axis = 1; }
+  if(tz < t) { t = tz; axis = 2; }
+  st.axis = axis;
+  return t;
+};
+
+const snapHit = (ox, oy, oz, idx1, idy1, idz1, t0) => {
+  let ix = st.vx, iy = st.vy, iz = st.vz;
+  for(let k = 0; k < 4; k++) {
+    let tb = -Infinity, axis = 0;
+    if(idx1 !== 0) tb = ((idx1 > 0 ? ix : ix + 1) - ox) * idx1;
+    if(idy1 !== 0) { const ty = ((idy1 > 0 ? iy : iy + 1) - oy) * idy1; if(ty > tb) { tb = ty; axis = 1; } }
+    if(idz1 !== 0) { const tz = ((idz1 > 0 ? iz : iz + 1) - oz) * idz1; if(tz > tb) { tb = tz; axis = 2; } }
+    st.axis = axis;
+    if(tb <= t0 + 1e-9) { st.t = t0; break; }
+    st.t = tb;
+    const nx = ix - (axis === 0 ? (idx1 > 0 ? 1 : -1) : 0);
+    const ny = iy - (axis === 1 ? (idy1 > 0 ? 1 : -1) : 0);
+    const nz = iz - (axis === 2 ? (idz1 > 0 ? 1 : -1) : 0);
+    if(!inBox(nx, ny, nz)) break;
+    if(vox[idx(nx, ny, nz)] === 0) break;
+    ix = nx; iy = ny; iz = nz;
+  }
+  st.vx = ix; st.vy = iy; st.vz = iz;
+};
+
+const clipBox = (ox, oy, oz, dx, dy, dz) => {
+  let t0 = 0, t1 = 1e9, a, b, q;
+  if(Math.abs(dx) < 1e-12) { if(ox < 0 || ox > N) return false; }
+  else { a = -ox / dx; b = (N - ox) / dx; if(a > b) { q = a; a = b; b = q; } if(a > t0) t0 = a; if(b < t1) t1 = b; }
+  if(Math.abs(dy) < 1e-12) { if(oy < 0 || oy > N) return false; }
+  else { a = -oy / dy; b = (N - oy) / dy; if(a > b) { q = a; a = b; b = q; } if(a > t0) t0 = a; if(b < t1) t1 = b; }
+  if(Math.abs(dz) < 1e-12) { if(oz < 0 || oz > N) return false; }
+  else { a = -oz / dz; b = (N - oz) / dz; if(a > b) { q = a; a = b; b = q; } if(a > t0) t0 = a; if(b < t1) t1 = b; }
+  if(t1 <= t0) return false;
+  st.clipT0 = t0 < 0 ? 0 : t0; st.clipT1 = t1;
+  return true;
+};
+
+const trace = (ox, oy, oz, dx, dy, dz, tMax) => {
+  st.t = 0; st.type = 0;
+  if(!clipBox(ox, oy, oz, dx, dy, dz)) return false;
+  let t = st.clipT0;
+  let t1 = st.clipT1;
+  if(tMax < t1) t1 = tMax;
+  const idx1 = dx !== 0 ? 1 / dx : 0, idy1 = dy !== 0 ? 1 / dy : 0, idz1 = dz !== 0 ? 1 / dz : 0;
+  let L = LMAX;
+  for(let guard = 0; guard < 20000 && t < t1; guard++) {
+    const px = ox + dx * (t + EPS), py = oy + dy * (t + EPS), pz = oz + dz * (t + EPS);
+    if(px < 0 || py < 0 || pz < 0 || px >= N || py >= N || pz >= N) break;
+    const ix = px | 0, iy = py | 0, iz = pz | 0;
+    let v = 0;
+    for(;;) {
+      const n = N >> L;
+      v = nodeGet(L, (((iz >> L) * n + (iy >> L)) * n + (ix >> L)));
+      if(v === 0 || L === 0) break;
+      L--;
+    }
+    if(v === 0) {
+      t = exitFast(ox, oy, oz, idx1, idy1, idz1, 1 << L, ix >> L, iy >> L, iz >> L) + EPS;
+      L = Math.min(LMAX, L + 1);
+      continue;
+    }
+    st.t = t; st.vx = ix; st.vy = iy; st.vz = iz;
+    snapHit(ox, oy, oz, idx1, idy1, idz1, st.clipT0);
+    st.type = vox[idx(st.vx, st.vy, st.vz)];
+    const a = st.axis;
+    st.nx = a === 0 ? (dx > 0 ? -1 : 1) : 0;
+    st.ny = a === 1 ? (dy > 0 ? -1 : 1) : 0;
+    st.nz = a === 2 ? (dz > 0 ? -1 : 1) : 0;
+    return true;
+  }
+  return false;
+};
+
+// ─────────────────────────── PLAYER ───────────────────────────
+const P = { x: N / 2 + 0.5, y: N - 2, z: N / 2 + 0.5, vy: 0, yaw: 0.6, pitch: -0.15, onGround: false, mat: 5 };
+
+const collides = (x, y, z) => {
+  const h = EYE + 0.18;
+  for(let dy = 0; dy <= h; dy += 0.45) {
+    const yy = y + Math.min(dy, h);
+    if(getVox(Math.floor(x - PLAYER_R), Math.floor(yy), Math.floor(z - PLAYER_R))) return true;
+    if(getVox(Math.floor(x + PLAYER_R), Math.floor(yy), Math.floor(z - PLAYER_R))) return true;
+    if(getVox(Math.floor(x - PLAYER_R), Math.floor(yy), Math.floor(z + PLAYER_R))) return true;
+    if(getVox(Math.floor(x + PLAYER_R), Math.floor(yy), Math.floor(z + PLAYER_R))) return true;
+  }
+  return false;
+};
+
+const keys = new Set();
+const movePlayer = (dt) => {
+  const sp = MOVE_SPEED * (keys.has('ShiftLeft') ? RUN_MULT : 1);
+  let fx = 0, fz = 0;
+  if(keys.has('KeyW')) fz += 1;
+  if(keys.has('KeyS')) fz -= 1;
+  if(keys.has('KeyA')) fx -= 1;
+  if(keys.has('KeyD')) fx += 1;
+  const l = Math.hypot(fx, fz) || 1;
+  const cy = Math.cos(P.yaw), sy = Math.sin(P.yaw);
+  const move = (fx || fz) ? sp : 0;
+  const vx = ((fz / l) * sy + (fx / l) * cy) * move;
+  const vz = ((fz / l) * cy - (fx / l) * sy) * move;
+  P.vy -= GRAVITY * dt;
+  if(keys.has('Space') && P.onGround) { P.vy = JUMP_V; P.onGround = false; }
+
+  if(collides(P.x, P.y, P.z)) {
+    for(let k = 0; k < N && collides(P.x, P.y, P.z); k++) P.y += 1;
+    P.vy = 0;
+  }
+  const nx = P.x + vx * dt;
+  if(!collides(nx, P.y, P.z)) P.x = nx;
+  const nz = P.z + vz * dt;
+  if(!collides(P.x, P.y, nz)) P.z = nz;
+  const ny = P.y + P.vy * dt;
+  if(!collides(P.x, ny, P.z)) { P.y = ny; P.onGround = false; }
+  else { if(P.vy < 0) P.onGround = true; P.vy = 0; }
+  if(P.y < 1) { P.y = 1; P.vy = 0; P.onGround = true; }
+
+  const mid = N / 2, trip = CHUNK * 0.5;
+  if(P.x - mid > trip) { shiftWorld(CHUNK, 0); P.x -= CHUNK; }
+  else if(mid - P.x > trip) { shiftWorld(-CHUNK, 0); P.x += CHUNK; }
+  if(P.z - mid > trip) { shiftWorld(0, CHUNK); P.z -= CHUNK; }
+  else if(mid - P.z > trip) { shiftWorld(0, -CHUNK); P.z += CHUNK; }
+};
+
+// ─────────────────────────── RENDER ───────────────────────────
+const occAt = (x, y, z) => (getVox(x, y, z) !== 0 ? 1 : 0);
+const vAO = (s1, s2, c) => (s1 && s2) ? 0 : (3 - (s1 + s2 + c));
+
+const voxAO = (px, py, pz, nx, ny, nz) => {
+  const e = 0.5;
+  const vx = Math.floor(px - nx * e), vy = Math.floor(py - ny * e), vz = Math.floor(pz - nz * e);
+  const bx = vx + nx, by = vy + ny, bz = vz + nz;
+  let ux, uy, uz, wx2, wy2, wz2, fu, fv;
+  if(nx !== 0) { ux = 0; uy = 1; uz = 0; wx2 = 0; wy2 = 0; wz2 = 1; fu = py - vy; fv = pz - vz; }
+  else if(ny !== 0) { ux = 1; uy = 0; uz = 0; wx2 = 0; wy2 = 0; wz2 = 1; fu = px - vx; fv = pz - vz; }
+  else { ux = 1; uy = 0; uz = 0; wx2 = 0; wy2 = 1; wz2 = 0; fu = px - vx; fv = py - vy; }
+  const sum = occAt(bx - ux, by - uy, bz - uz), sup = occAt(bx + ux, by + uy, bz + uz);
+  const svm = occAt(bx - wx2, by - wy2, bz - wz2), svp = occAt(bx + wx2, by + wy2, bz + wz2);
+  const cmm = occAt(bx - ux - wx2, by - uy - wy2, bz - uz - wz2), cpm = occAt(bx + ux - wx2, by + uy - wy2, bz + uz - wz2);
+  const cmp = occAt(bx - ux + wx2, by - uy + wy2, bz - uz + wz2), cpp = occAt(bx + ux + wx2, by + uy + wy2, bz + uz + wz2);
+  const a00 = vAO(sum, svm, cmm), a10 = vAO(sup, svm, cpm), a01 = vAO(sum, svp, cmp), a11 = vAO(sup, svp, cpp);
+  const ao = ((a00 * (1 - fu) + a10 * fu) * (1 - fv) + (a01 * (1 - fu) + a11 * fu) * fv) / 3;
+  return 1 - (1 - ao) * AO_STRENGTH;
+};
+
+const cv = document.getElementById('cv');
+const ctx2d = cv.getContext('2d', { alpha: false });
+let img = null, buf = null, RW = 0, RH = 0;
+
+const resize = () => {
+  RH = RES_H;
+  RW = Math.max(1, Math.round(RH * (innerWidth / innerHeight)));
+  cv.width = RW; cv.height = RH;
+  img = ctx2d.createImageData(RW, RH);
+  buf = new Uint32Array(img.data.buffer);
+};
+
+const render = () => {
+  const fov = Math.tan(FOV_DEG * Math.PI / 360);
+  const cy = Math.cos(P.yaw), sy = Math.sin(P.yaw), cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
+  const fxv = cp * sy, fyv = sp, fzv = cp * cy;
+  const rxv = cy, rzv = -sy;
+  const uxv = -sp * sy, uyv = cp, uzv = -sp * cy;
+  const ex = P.x, ey = P.y + EYE, ez = P.z;
+  const aspect = RW / RH;
+  const sl = Math.hypot(SUN[0], SUN[1], SUN[2]);
+  const sx = SUN[0] / sl, sy2 = SUN[1] / sl, sz = SUN[2] / sl;
+  const fogA = MAX_DIST * FOG_START, fogB = MAX_DIST * FOG_END;
+  const [fr, fg, fb] = FOG_COLOR;
+
+  for(let py = 0; py < RH; py++) {
+    const v = (1 - 2 * (py + 0.5) / RH) * fov;
+    for(let px = 0; px < RW; px++) {
+      const u = (2 * (px + 0.5) / RW - 1) * fov * aspect;
+      let dx = rxv * u + uxv * v + fxv;
+      let dy = uyv * v + fyv;
+      let dz = rzv * u + uzv * v + fzv;
+      const dl = Math.hypot(dx, dy, dz); dx /= dl; dy /= dl; dz /= dl;
+
+      let r, g, b;
+      if(trace(ex, ey, ez, dx, dy, dz, MAX_DIST)) {
+        const c = PAL[st.type];
+        const lam = Math.max(0, st.nx * sx + st.ny * sy2 + st.nz * sz);
+        let k = AMBIENT + (1 - AMBIENT) * lam;
+        k *= st.ny > 0 ? 1 : (st.ny < 0 ? 0.62 : (st.nx ? 0.82 : 0.9));
+        if(AO) k *= voxAO(ex + dx * st.t, ey + dy * st.t, ez + dz * st.t, st.nx, st.ny, st.nz);
+        r = c[0] * k; g = c[1] * k; b = c[2] * k;
+        const f = Math.min(1, Math.max(0, (st.t - fogA) / (fogB - fogA)));
+        r += (fr - r) * f; g += (fg - g) * f; b += (fb - b) * f;
+      } else {
+        const k = Math.max(0, Math.min(1, dy * 1.6 + 0.15));
+        r = SKY_HOR[0] + (SKY_TOP[0] - SKY_HOR[0]) * k;
+        g = SKY_HOR[1] + (SKY_TOP[1] - SKY_HOR[1]) * k;
+        b = SKY_HOR[2] + (SKY_TOP[2] - SKY_HOR[2]) * k;
+        const hz = Math.max(0, 1 - Math.abs(dy) * 6);
+        r += (fr - r) * hz; g += (fg - g) * hz; b += (fb - b) * hz;
+      }
+      buf[py * RW + px] = 0xFF000000 | ((b | 0) << 16) | ((g | 0) << 8) | (r | 0);
+    }
+  }
+  ctx2d.putImageData(img, 0, 0);
+};
+
+(() => {
+  addEventListener('keydown', (e) => {
+    keys.add(e.code);
+    if(e.code === 'Space') e.preventDefault();
+    const n = Number(e.key);
+    if(n >= 1 && n <= MATS) P.mat = n - 1;
+  });
+  addEventListener('keyup', (e) => keys.delete(e.code));
+  cv.addEventListener('click', () => { if(document.pointerLockElement !== cv) cv.requestPointerLock(); });
+  addEventListener('mousemove', (e) => {
+    if(document.pointerLockElement !== cv) return;
+    P.yaw += e.movementX * MOUSE_SENS;
+    P.pitch = Math.max(-1.5, Math.min(1.5, P.pitch - e.movementY * MOUSE_SENS));
+  });
+  addEventListener('contextmenu', (e) => e.preventDefault());
+  addEventListener('mousedown', (e) => {
+    if(document.pointerLockElement !== cv) return;
+    const cyy = Math.cos(P.yaw), syy = Math.sin(P.yaw), cpp = Math.cos(P.pitch), spp = Math.sin(P.pitch);
+    const dx = cpp * syy, dy = spp, dz = cpp * cyy;
+    if(!trace(P.x, P.y + EYE, P.z, dx, dy, dz, REACH)) return;
+
+    const px = P.x + dx * st.t, py = P.y + EYE + dy * st.t, pz = P.z + dz * st.t;
+    const off = e.button === 0 ? -0.5 : 0.5;
+    sphereEdit(px + st.nx * off, py + st.ny * off, pz + st.nz * off, DIG_R, e.button === 0 ? 0 : base(P.mat) + 1);
+  });
+  addEventListener('resize', resize);
+
+  const hud = document.getElementById('hud');
+
+  let last = performance.now(), fps = 0, hudT = 0, renderMs = 0;
+  const frame = (now) => {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    if(dt > 0) fps = fps ? fps * 0.9 + 0.1 / dt : 1 / dt;
+    movePlayer(dt);
+    pumpPending(LOAD_BUDGET_MS);
+    const t0 = performance.now();
+    render();
+    renderMs = renderMs * 0.9 + (performance.now() - t0) * 0.1;
+    if(now - hudT > 250) {
+      hudT = now;
+      hud.textContent =
+        `${RW}×${RH} · ${(RW * RH)} rays · cube ${N}³ · ${fps |0 } fps · frame ${renderMs.toFixed(1)} ms\n`
+    }
+    requestAnimationFrame(frame);
+  };
+
+  const knobs = {
+    get RES_H() { return RES_H; }, set RES_H(v) { RES_H = v; },
+    get FOV_DEG() { return FOV_DEG; }, set FOV_DEG(v) { FOV_DEG = v; },
+    get MAX_DIST() { return MAX_DIST; }, set MAX_DIST(v) { MAX_DIST = v; },
+  };
+  const pane = new Pane({ container: document.getElementById('panel'), title: 'MicroCube' });
+  pane.addBinding(knobs, 'RES_H', { label: 'resolution', min: 60, max: 400, step: 10 }).on('change', resize);
+  pane.addBinding(knobs, 'FOV_DEG', { label: 'fov', min: 40, max: 110, step: 1 });
+  pane.addBinding(knobs, 'MAX_DIST', { label: 'far', min: 40, max: N / 2, step: 10 });
+  pane.addButton({ title: '@vseplet' }).on('click', () => open('https://x.com/vseplet', '_blank'));
+
+  resize();
+  for(let z = 0; z < N; z++) for(let x = 0; x < N; x++) genColumn(x, z);
+  reduceBox(0, 0, 0, N - 1, N - 1, N - 1);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
