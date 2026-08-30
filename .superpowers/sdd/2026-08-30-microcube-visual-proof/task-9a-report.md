@@ -514,3 +514,108 @@ Runtime budget overflows remain nonzero: 7,418 at capture time 0, 7,433 at captu
 BLOCKED: the single fractal depth translation passes RED/GREEN, visual, coverage, creature, span, world-bounds, test, and build checks, but the only permitted benchmark exceeds the p95 gate.
 
 `git diff --check` passed with no output. The final diff contains only `SceneData.swift`, `SceneDataTests.swift`, and this report.
+
+## Fix round 5 diagnosis before test edits
+
+I reread `SceneData.makeHero() throws -> SceneData` and `SceneDataTests` before changing the focused fixture. The interfaces still match the round-4 package, but the current fractal literals conflict with the round-5 ruling:
+
+- The source uses base center `(273.375, 119.5, 360.875)`, which scales to round 4's final center `(266.0625, 128.25, 390.3125)`. Round 5 restores the accepted base center `(270, 118, 340)` and final center `(261, 126, 359)`.
+- The source uses base radius `7`, then applies `heroPresentationScale = 1.5` to produce final radius `10.5`. The round-5 candidate uses base radius `5` and final radius `7.5`.
+- The source uses base bounds `(266.375, 107.5, 353.875)` through `(280.375, 131.5, 367.875)`, which scale to `(255.5625, 110.25, 379.8125)` through `(276.5625, 146.25, 400.8125)`. Proportional base bounds around the accepted center use X/Z plus or minus `5` and Y plus or minus `8.5`: `(265, 109.5, 335)` through `(275, 126.5, 345)`. The existing presentation transform produces final bounds `(253.5, 113.25, 351.5)` through `(268.5, 138.75, 366.5)`.
+- The current test fixture expects the round-4 center, radius, and bounds. The creature, sculpture, glass, Gaussian, camera, terrain, cap, and projection fixtures match the accepted composition and need no edits.
+
+The new literal test catches a production change that keeps any round-4 center, radius, or bound. Its expectations come from the round-5 ruling and hand-applied 1.5x anchor transform, rather than a production helper.
+
+The round-3 capture supplies a measured starting point at the restored center: 7,365 fractal pixels, full box `124x118+298+189`, and centroid near `(362.90, 249.11)`. Scaling the base radius from `7` to `5` predicts `7,365 * (5 / 7)^2 = 3,757.65` pixels, or `0.366958%` of the 1,024,000-pixel drawable. Applying the same ratio around the measured centroid predicts a box near `89x84+317+207`, ending around x=405. The closest round-3 creature starts at x=411, so the estimate keeps a distinct upper-left fractal with about a six-pixel horizontal gap. The box envelope covers about `0.729%` of the drawable, below the 10% limit.
+
+At eight units per leaf, the proposed final bounds reference 36 leaves: X `31...33`, Y `14...17`, and Z `43...45`. Round 3 referenced 60 leaves and round 4 references 96, so the candidate reduces fractal leaf references by 40% from the accepted nearer composition and 62.5% from round 4. Each proposed final bound coordinate lies between `0` and `512`. The final X/Z half-extent equals the `7.5` radius, and the final Y half-extent is `12.75`, preserving the prior radius-to-Y-bound proportion within `0.84%`.
+
+## Fix round 5 RED
+
+I replaced the broad fixture's round-4 fractal row with a dedicated test whose center, radius, minimum bound, and maximum bound expectations use the literals above. The first sandboxed command could not compile the package manifest because macOS rejected nested `sandbox-exec`; it never started the test. I reran the same command outside that sandbox once:
+
+```sh
+./scripts/test.sh --filter 'SceneDataTests/testHeroFractalRestoresAcceptedCenterWithReducedConservativeBounds'
+```
+
+The test executed once and failed with four expected assertions. Production returned center `(266.0625, 128.25, 390.3125)` instead of `(261, 126, 359)`, radius `10.5` instead of `7.5`, minimum bound `(255.5625, 110.25, 379.8125)` instead of `(253.5, 113.25, 351.5)`, and maximum bound `(276.5625, 146.25, 400.8125)` instead of `(268.5, 138.75, 366.5)`. The build completed and the test reported four failures with zero unexpected failures.
+
+## Fix round 5 GREEN
+
+The single production edit restores the fractal's accepted base center, reduces its base radius from `7` to `5`, and reduces its base bounds to the proportional literals from the diagnosis. It keeps `heroPresentationScale = 1.5`, eight fractal iterations, material index `2`, stable ID `1`, rotation, camera, terrain, creatures, lights, Gaussians, renderer, and traversal unchanged.
+
+I reran the focused RED command once after the production edit. It executed one test with zero failures.
+
+## Fix round 5 capture and visual evidence
+
+`./scripts/build-app.sh` built and signed `dist/MicroCube Metal.app`. Four release-app invocations used the fixed 1280 by 800 reset camera, all features, render scale 1, fixed step 1/120, and final or primitive-ID view. Each required time/view pair ran once.
+
+| Time | View | PNG | SHA-256 | Runtime overflows |
+| --- | --- | --- | --- | ---: |
+| 0 | final | `/tmp/microcube-task9a-round5-final-t0.png` | `8b9163f268bc0d7c02124f96e0c7a1627c2904fe3f3bfa628b9018131ed31e8b` | 6,675 |
+| 1 | final | `/tmp/microcube-task9a-round5-final-t1.png` | `1dc7c40e058429d116a81b16a22f2888c09ef254ce7c4b87fd6b51595c60f476` | 6,690 |
+| 0 | primitive-ID | `/tmp/microcube-task9a-round5-primitive-t0.png` | `b9de7c0cac6e4ec86ca0987b661ce66c625f8d9d0f98ce8a008dbdb1c0f27432` | 6,675 |
+| 1 | primitive-ID | `/tmp/microcube-task9a-round5-primitive-t1.png` | `a160c2511708c91ddc1e0ff9aba24490f848722878ff5d6f63a0cc6a7bf01822` | 6,690 |
+
+All four JSON reports record `status=pass`, `failure=null`, one window, two passes, all features, zero command errors, zero dropped drawables, and zero semaphore timeouts.
+
+The exact primitive-ID color mask contains 3,922 fractal pixels and box `89x85+317+206` at both times. Actual coverage is `3,922 / 1,024,000 = 0.383008%`; the full box covers `0.738770%`. The result falls inside the required 3,000 to 4,000 pixel interval and below 10% coverage. Relative to round 3, the pixel count falls 46.75% and the box area falls 48.30%. Relative to round 4, they fall 15.85% and 19.56%.
+
+The accepted round-3 fractal mask centroid is `(361.656, 246.796)` under the same image-moment calculation. Round 5 measures `(361.902, 247.896)` at both times, a subpixel X change and a 1.1-pixel Y change from rasterizing the smaller surface. The authored center returns exactly to round 3's `(261, 126, 359)`. At time 0, the fractal ends at x=405 and the closest creature starts at x=411. At time 1, the closest creature starts at y=341 after the fractal ends at y=290. The mask stays distinct in the upper left.
+
+Exact creature masks produced one connected component for every stable ID at both times:
+
+| Time | ID 2 | ID 3 | ID 4 | ID 5 | ID 6 | ID 7 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 6,146 | 1,368 | 3,412 | 3,075 | 1,360 | 2,355 |
+| 1 | 6,049 | 1,281 | 3,495 | 3,128 | 1,511 | 2,360 |
+
+Each creature remains above the 500-pixel gate. Their counts and boxes match rounds 3 and 4. After replacing the fractal color with black, ImageMagick reports zero absolute-error pixels between the round-3 and round-5 primitive-ID captures at both times. This proves that the six creatures, sculpture, glass, terrain, and slab keep their accepted screen masks. The accepted 102-pixel hero span and 6-to-7-pixel terrain-cell spans therefore remain unchanged, preserving the 1.0 hero ratio and 67% terrain ratio. Visual inspection of both final captures confirms six separated silhouettes, the upper-left fractal, reflective sculpture, blue glass, fog, and upper-right slab balance.
+
+## Fix round 5 raw counter evidence
+
+| Run | SDF steps | Macro descents | Macro skips | Runtime overflows |
+| --- | ---: | ---: | ---: | ---: |
+| Capture time 0 | 1,956,360 | 20,100,390 | 12,424,697 | 6,675 |
+| Capture time 1 | 1,957,664 | 20,088,011 | 12,421,412 | 6,690 |
+| Benchmark time 1 | 1,955,269 | 20,081,460 | 12,420,925 | 6,682 |
+
+At time 0, round 5 reduces round-4 SDF steps by 3.99%, macro descents by 1.97%, macro skips by 2.09%, and overflows by 10.02%. Time 1 produces matching reductions of 3.98%, 1.97%, 2.09%, and 10.00%. Restoring the nearer center removes round 4's macro-traversal increase, while the smaller radius and bounds reduce SDF work below both prior rounds.
+
+Runtime budget overflows remain nonzero at 6,675, 6,690, and 6,682. The count improves from round 4 but remains the deferred Task 9A concern. The fixed-budget mixed-traversal GPU probe passes with zero failures, and the source keeps every traversal budget and cap unchanged.
+
+## Fix round 5 regressions and build
+
+Verification commands for this production state:
+
+```sh
+./scripts/test.sh --filter 'SceneDataTests/testHero'
+./scripts/test.sh --filter ShadowTraversalTests
+./scripts/test.sh --filter MixedTraversalTests
+./scripts/test.sh --filter VolumeProbeTests
+./scripts/test.sh
+./scripts/build-app.sh
+```
+
+- Focused hero tests: 7 passed, including literal fractal values, exact camera, terrain contact, six visible creatures, world bounds, and all scene/reference caps.
+- `ShadowTraversalTests`: 2 passed with zero false and missed exact-shadow occlusions.
+- `MixedTraversalTests`: 7 passed, including the cross-leaf fix and fixed traversal budgets.
+- `VolumeProbeTests`: 4 passed.
+- Full release suite: 96 passed with zero failures.
+- Release app build: passed.
+
+## Fix round 5 benchmark and status
+
+I waited for the user's interactive app process to exit before starting the acceptance run, so it did not contend for the GPU. The sole fresh benchmark used the fixed time-1 final view, 20 warmup frames, and 60 measured frames. No retry occurred.
+
+- Report: `/tmp/microcube-task9a-round5-benchmark.json`
+- Report SHA-256: `6bb2ed4d594c5376f722005c3cf45075a168f7a95399493d8cf5e1c2fe046933`
+- p95: `1.8391666817478836 ms`
+- Gate: `5.997293750988319 ms`
+- Margin: `4.158127069240435 ms` below the gate.
+- Sample range: `1.6110833385027945...1.9347083289176226 ms` across 60 samples.
+- Runtime: `status=pass`, `failure=null`, nominal thermal state before and after, one window, two passes, all features, 1280 by 800 at scale 1, zero command errors, zero dropped drawables, and zero semaphore timeouts.
+
+`git diff --check` passed with no output. The final diff contains only `SceneData.swift`, `SceneDataTests.swift`, and this report.
+
+DONE: the single round-5 fractal reauthoring passes the visual, composition, projection, world-bound, cap, fixed-budget, regression, build, lifecycle, and one-shot p95 gates. It preserves the exact camera, accepted non-fractal masks, six silhouettes, terrain and hero spans, cross-leaf correction, glass, sculpture, fog, and slab balance.

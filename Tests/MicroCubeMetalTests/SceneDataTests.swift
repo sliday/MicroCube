@@ -74,13 +74,31 @@ final class SceneDataTests: XCTestCase {
         }
     }
 
+    func testHeroFractalRestoresAcceptedCenterWithReducedConservativeBounds() throws {
+        let scene = try SceneData.makeHero()
+        let fractal = try XCTUnwrap(scene.sdfInstances.first { $0.metadata.x == 3 })
+
+        XCTAssertEqual(
+            SIMD3<Float>(fractal.positionScale.x, fractal.positionScale.y, fractal.positionScale.z),
+            SIMD3<Float>(261, 126, 359)
+        )
+        XCTAssertEqual(fractal.positionScale.w, 7.5, accuracy: 0.0001)
+        XCTAssertEqual(
+            SIMD3<Float>(fractal.sweptBoundsMin.x, fractal.sweptBoundsMin.y, fractal.sweptBoundsMin.z),
+            SIMD3<Float>(253.5, 113.25, 351.5)
+        )
+        XCTAssertEqual(
+            SIMD3<Float>(fractal.sweptBoundsMax.x, fractal.sweptBoundsMax.y, fractal.sweptBoundsMax.z),
+            SIMD3<Float>(268.5, 138.75, 366.5)
+        )
+    }
+
     func testHeroPresentationScaleExpandsSDFsAndGaussiansWithinWorldBounds() throws {
         let scene = try SceneData.makeHero()
         let anchor = SIMD3<Float>(288, 102, 302)
         let scale: Float = 1.5
         let expectedSDFs: [(UInt32, SIMD3<Float>, Float, SIMD3<Float>, SIMD3<Float>)] = [
             (0, SIMD3<Float>(277.5, 96, 288.5), 10.5, SIMD3<Float>(267, 81, 278), SIMD3<Float>(288, 111, 299)),
-            (3, SIMD3<Float>(266.0625, 128.25, 390.3125), 10.5, SIMD3<Float>(255.5625, 110.25, 379.8125), SIMD3<Float>(276.5625, 146.25, 400.8125)),
             (4, SIMD3<Float>(286.5, 115.5, 306.5), 7.5, SIMD3<Float>(279, 108, 299), SIMD3<Float>(294, 123, 314))
         ]
         let originalCamera = SIMD3<Float>(256.5, 112, 256.5)

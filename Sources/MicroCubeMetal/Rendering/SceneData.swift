@@ -35,11 +35,11 @@ struct SceneData {
             parameters: SIMD4<Float>(5, 8, 2, 0),
             metadata: SIMD4<UInt32>(0, 1, 0, 0)
         )
-        let fractalCenter = scalePoint(SIMD3<Float>(273.375, 119.5, 360.875))
+        let fractalCenter = scalePoint(SIMD3<Float>(270, 118, 340))
         let fractal = SDFInstance(
-            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(266.375, 107.5, 353.875)), 0),
-            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(280.375, 131.5, 367.875)), 0),
-            positionScale: SIMD4<Float>(fractalCenter, 7 * heroPresentationScale),
+            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(265, 109.5, 335)), 0),
+            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(275, 126.5, 345)), 0),
+            positionScale: SIMD4<Float>(fractalCenter, 5 * heroPresentationScale),
             rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
             parameters: SIMD4<Float>(8, 0, 0, 0),
             metadata: SIMD4<UInt32>(3, 2, 0, 1)
