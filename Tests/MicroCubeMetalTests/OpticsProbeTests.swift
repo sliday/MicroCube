@@ -15,6 +15,10 @@ final class OpticsProbeTests: XCTestCase {
         XCTAssertEqual(try runOpticsProbe().recursiveSecondaryRayCount, 0)
     }
 
+    func testAllowedOpticalSceneDispatchAdvancesBudgetToSecondaryDepth() throws {
+        XCTAssertEqual(try runOpticsProbe().secondaryShadeRayDepth, 1)
+    }
+
     func testSecondaryOpticalLaunchInstrumentationCountsRecursion() throws {
         XCTAssertEqual(try runOpticsProbe().instrumentedSecondaryLaunchCount, 1)
     }
@@ -47,8 +51,7 @@ final class OpticsProbeTests: XCTestCase {
             OpticalPath externalPath;
             OpticalPath internalPath;
             OpticalRayBudget primaryBudget = {0u, 0u};
-            OpticalRayBudget instrumentedSecondaryBudget = {1u, 0u};
-            OpticalRayBudget secondaryShadeBudget = {1u, 0u};
+            OpticalRayBudget secondaryShadeBudget = {0u, 0u};
             float3 origin(-3.0f, 0.25f, 0.0f);
             float3 direction = normalize(float3(1.0f, 0.0f, 0.0f));
             bool crossed = traceOpticalSphere(
@@ -58,12 +61,25 @@ final class OpticsProbeTests: XCTestCase {
                 float3(0.0f, 0.8f, 0.0f), normalize(float3(1.0f, 0.0f, 0.0f)),
                 float3(0.0f), 1.0f, 1.5f, float3(0.18f, 0.07f, 0.03f), internalPath, primaryBudget
             );
+            HybridHit secondaryShadeHit;
+            TraceCounts secondaryShadeCounts = {};
+            traceOpticalScene(
+                voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                float3(-1.0f), float3(-1.0f, 0.0f, 0.0f), 1.0f, 0.0f,
+                secondaryShadeHit, secondaryShadeCounts, secondaryShadeBudget
+            );
+            shadeSecondaryHit(
+                float3(0.0f), float3(0.0f, 1.0f, 0.0f), float3(1.0f),
+                float3(0.0f, 1.0f, 0.0f), 0.42f, lights, scene, 0.0f, secondaryShadeBudget
+            );
+            uint recursiveCountAfterShading = secondaryShadeBudget.recursiveSecondaryRayCount;
+            uint rayDepthAfterShading = secondaryShadeBudget.rayDepth;
             OpticalPath instrumentedPath;
             bool instrumentedSecondaryLaunch = traceOpticalSphere(
                 origin, direction, float3(0.0f), 1.0f, 1.5f, float3(0.18f, 0.07f, 0.03f),
-                instrumentedPath, instrumentedSecondaryBudget
+                instrumentedPath, secondaryShadeBudget
             );
-            OpticalRayBudget instrumentedSceneBudget = {1u, 0u};
+            OpticalRayBudget instrumentedSceneBudget = {0u, 0u};
             HybridHit sceneHit;
             TraceCounts sceneCounts = {};
             traceOpticalScene(
@@ -71,9 +87,10 @@ final class OpticsProbeTests: XCTestCase {
                 float3(-1.0f), float3(-1.0f, 0.0f, 0.0f), 1.0f, 0.0f,
                 sceneHit, sceneCounts, instrumentedSceneBudget
             );
-            shadeSecondaryHit(
-                float3(0.0f), float3(0.0f, 1.0f, 0.0f), float3(1.0f),
-                float3(0.0f, 1.0f, 0.0f), 0.42f, lights, scene, 0.0f, secondaryShadeBudget
+            traceOpticalScene(
+                voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                float3(-1.0f), float3(-1.0f, 0.0f, 0.0f), 1.0f, 0.0f,
+                sceneHit, sceneCounts, instrumentedSceneBudget
             );
             output[0] = crossed ? externalPath.entryDirection.x : NAN;
             output[1] = crossed ? externalPath.entryDirection.y : NAN;
@@ -86,16 +103,17 @@ final class OpticsProbeTests: XCTestCase {
             output[8] = crossed ? externalPath.reflectionDirection.z : NAN;
             output[9] = totalInternalReflection && internalPath.totalInternalReflection != 0u ? 0.0f : 1.0f;
             output[10] = totalInternalReflection ? float(internalPath.canTraceSecondary) : 1.0f;
-            output[11] = float(secondaryShadeBudget.recursiveSecondaryRayCount);
+            output[11] = float(recursiveCountAfterShading);
             output[12] = totalInternalReflection ? length(internalPath.secondaryOrigin) : 0.0f;
             output[13] = instrumentedSecondaryLaunch
-                ? float(instrumentedSecondaryBudget.recursiveSecondaryRayCount) : NAN;
+                ? float(secondaryShadeBudget.recursiveSecondaryRayCount) : NAN;
             output[14] = float(instrumentedSceneBudget.recursiveSecondaryRayCount);
+            output[15] = float(rayDepthAfterShading);
         }
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
         let pipeline = try MetalProbeHarness.makePipeline(name: "probeOptics", library: library, device: device)
-        let output = try XCTUnwrap(device.makeBuffer(length: 15 * MemoryLayout<Float>.stride, options: .storageModeShared))
+        let output = try XCTUnwrap(device.makeBuffer(length: 16 * MemoryLayout<Float>.stride, options: .storageModeShared))
         let lights = try XCTUnwrap(device.makeBuffer(length: MemoryLayout<Light>.stride, options: .storageModeShared))
         let scratch = try XCTUnwrap(device.makeBuffer(length: 256, options: .storageModeShared))
         let textureDescriptor = MTLTextureDescriptor()
@@ -129,7 +147,7 @@ final class OpticsProbeTests: XCTestCase {
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
 
-        let values = output.contents().bindMemory(to: Float.self, capacity: 15)
+        let values = output.contents().bindMemory(to: Float.self, capacity: 16)
         let direction = SIMD3<Float>(1, 0, 0)
         let entryNormal = SIMD3<Float>(-sqrt(1 - 0.25 * 0.25), 0.25, 0)
         let expectedEntry = refract(direction, normal: entryNormal, eta: 1 / 1.5)
@@ -149,7 +167,8 @@ final class OpticsProbeTests: XCTestCase {
             recursiveSecondaryRayCount: Int(values[11]),
             tirSecondaryOriginDistance: values[12],
             instrumentedSecondaryLaunchCount: Int(values[13]),
-            instrumentedSecondarySceneLaunchCount: Int(values[14])
+            instrumentedSecondarySceneLaunchCount: Int(values[14]),
+            secondaryShadeRayDepth: Int(values[15])
         )
     }
 
@@ -172,5 +191,6 @@ final class OpticsProbeTests: XCTestCase {
         let tirSecondaryOriginDistance: Float
         let instrumentedSecondaryLaunchCount: Int
         let instrumentedSecondarySceneLaunchCount: Int
+        let secondaryShadeRayDepth: Int
     }
 }

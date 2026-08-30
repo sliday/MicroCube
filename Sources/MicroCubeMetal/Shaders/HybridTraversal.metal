@@ -652,7 +652,9 @@ inline bool traceOpticalScene(texture3d<uint, access::read> voxels,
                               thread HybridHit &hit,
                               thread TraceCounts &counts,
                               thread OpticalRayBudget &opticalBudget) {
-    if (opticalBudget.rayDepth != 0u) {
+    if (opticalBudget.rayDepth == 0u) {
+        opticalBudget.rayDepth = 1u;
+    } else {
         ++opticalBudget.recursiveSecondaryRayCount;
     }
     return traceMixedScene(

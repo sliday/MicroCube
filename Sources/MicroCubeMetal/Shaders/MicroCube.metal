@@ -420,7 +420,7 @@ kernel void raycastHybrid(
                 } else {
                     HybridHit secondaryHit;
                     TraceCounts secondaryCounts = {};
-                    OpticalRayBudget secondaryOpticalBudget = {1u, 0u};
+                    OpticalRayBudget secondaryOpticalBudget = {0u, 0u};
                     bool secondaryFound = traceOpticalScene(
                         volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
                         path.secondaryOrigin, path.exitDirection, uniforms.cameraUpAndMaxDistance.w,
@@ -453,7 +453,7 @@ kernel void raycastHybrid(
             float3 reflectionDirection = normalize(reflect(direction, hit.normal));
             HybridHit secondaryHit;
             TraceCounts secondaryCounts = {};
-            OpticalRayBudget secondaryOpticalBudget = {1u, 0u};
+            OpticalRayBudget secondaryOpticalBudget = {0u, 0u};
             bool secondaryFound = traceOpticalScene(
                 volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
                 point + hit.normal * 0.01f, reflectionDirection, uniforms.cameraUpAndMaxDistance.w,
