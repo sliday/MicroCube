@@ -1,3 +1,84 @@
+inline float sdSphere(float3 p, float radius) {
+    return length(p) - radius;
+}
+
+inline float sdCapsule(float3 p, float3 a, float3 b, float radius) {
+    float3 pa = p - a;
+    float3 ba = b - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1.0e-8f), 0.0f, 1.0f);
+    return length(pa - ba * h) - radius;
+}
+
+inline float smoothUnion(float a, float b, float smoothing) {
+    float h = saturate(0.5f + 0.5f * (b - a) / max(smoothing, 1.0e-6f));
+    return mix(b, a, h) - smoothing * h * (1.0f - h);
+}
+
+inline float fractalDistance(float3 point, uint maximumIterations) {
+    float3 z = point;
+    float derivative = 1.0f;
+    float radius = length(z);
+    constexpr float power = 8.0f;
+    for (uint iteration = 0u; iteration < min(maximumIterations, 8u); ++iteration) {
+        radius = length(z);
+        if (radius > 2.0f) {
+            break;
+        }
+        float safeRadius = max(radius, 1.0e-6f);
+        float theta = acos(clamp(z.z / safeRadius, -1.0f, 1.0f));
+        float phi = atan2(z.y, z.x);
+        float radialPower = pow(safeRadius, power - 1.0f);
+        derivative = radialPower * power * derivative + 1.0f;
+        float magnitude = radialPower * safeRadius;
+        theta *= power;
+        phi *= power;
+        z = magnitude * float3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + point;
+    }
+    radius = max(length(z), 1.0e-6f);
+    return max(0.5f * log(radius) * radius / max(derivative, 1.0e-6f), 1.0e-5f);
+}
+
+inline float distanceToInstance(float3 point,
+                                thread const SDFInstance &instance,
+                                uint fractalIterations) {
+    float3 local = point - instance.positionScale.xyz;
+    float scale = max(instance.positionScale.w, 1.0e-4f);
+    switch (instance.metadata.x) {
+        case 1u: {
+            float height = max(instance.parameters.x, scale * 2.0f);
+            float body = sdCapsule(local, float3(0.0f, -height * 0.5f, 0.0f),
+                                  float3(0.0f, height * 0.5f, 0.0f), scale * 0.32f);
+            float head = sdSphere(local - float3(0.0f, height * 0.55f, 0.0f), scale * 0.48f);
+            return smoothUnion(body, head, scale * 0.22f);
+        }
+        case 3u:
+            return fractalDistance(local / scale, fractalIterations) * scale;
+        default:
+            return sdSphere(local, scale);
+    }
+}
+
+inline float3 sdfNormal(float3 point,
+                        thread const SDFInstance &instance,
+                        uint fractalIterations) {
+    constexpr float epsilon = 0.002f;
+    float3 x(epsilon, 0.0f, 0.0f);
+    float3 y(0.0f, epsilon, 0.0f);
+    float3 z(0.0f, 0.0f, epsilon);
+    float3 gradient(
+        distanceToInstance(point + x, instance, fractalIterations)
+            - distanceToInstance(point - x, instance, fractalIterations),
+        distanceToInstance(point + y, instance, fractalIterations)
+            - distanceToInstance(point - y, instance, fractalIterations),
+        distanceToInstance(point + z, instance, fractalIterations)
+            - distanceToInstance(point - z, instance, fractalIterations)
+    );
+    float gradientLength = length(gradient);
+    return isfinite(gradientLength) && gradientLength > 1.0e-8f
+        ? gradient / gradientLength
+        : float3(0.0f, 1.0f, 0.0f);
+}
+
 inline bool intersectWorld(float3 origin, float3 direction, thread float &nearT, thread float &farT) {
     float3 inverseDirection = 1.0f / copysign(max(abs(direction), float3(1.0e-7f)), direction);
     float3 a = (float3(0.0f) - origin) * inverseDirection;
@@ -29,17 +110,20 @@ inline float3 axisNormal(uint axis, float3 direction) {
     return normal;
 }
 
-inline bool traceVolume(texture3d<uint, access::read> volume,
-                        float3 origin,
-                        float3 direction,
-                        float maximumDistance,
-                        uint stopLevel,
-                        thread TraceHit &hit) {
+inline bool traceVoxelRange(texture3d<uint, access::read> volume,
+                            float3 origin,
+                            float3 direction,
+                            float minimumDistance,
+                            float maximumDistance,
+                            uint stopLevel,
+                            thread TraceHit &hit,
+                            thread uint &stepCount) {
     float nearT;
     float farT;
     if (!intersectWorld(origin, direction, nearT, farT)) {
         return false;
     }
+    nearT = max(nearT, minimumDistance);
     farT = min(farT, maximumDistance);
     if (farT <= nearT) {
         return false;
@@ -50,6 +134,7 @@ inline bool traceVolume(texture3d<uint, access::read> volume,
     uint level = kTopMip;
 
     for (uint step = 0u; step < 4096u && t < farT; ++step) {
+        ++stepCount;
         float3 point = origin + direction * (t + kTraceEpsilon);
         int3 voxel = int3(floor(point));
         if (any(voxel < int3(0)) || any(voxel >= int3(kWorldSize))) {
@@ -98,6 +183,218 @@ inline bool traceVolume(texture3d<uint, access::read> volume,
         level = min(kTopMip, level + 1u);
     }
     return false;
+}
+
+inline bool traceVolume(texture3d<uint, access::read> volume,
+                        float3 origin,
+                        float3 direction,
+                        float maximumDistance,
+                        uint stopLevel,
+                        thread TraceHit &hit) {
+    uint stepCount = 0u;
+    return traceVoxelRange(volume, origin, direction, 0.0f, maximumDistance, stopLevel, hit, stepCount);
+}
+
+inline bool intersectBounds(float3 origin,
+                            float3 direction,
+                            float3 minimum,
+                            float3 maximum,
+                            thread float &nearT,
+                            thread float &farT) {
+    float3 inverseDirection = 1.0f / copysign(max(abs(direction), float3(1.0e-7f)), direction);
+    float3 a = (minimum - origin) * inverseDirection;
+    float3 b = (maximum - origin) * inverseDirection;
+    float3 nearPlane = min(a, b);
+    float3 farPlane = max(a, b);
+    nearT = max(nearPlane.x, max(nearPlane.y, nearPlane.z));
+    farT = min(farPlane.x, min(farPlane.y, farPlane.z));
+    return farT >= max(nearT, 0.0f);
+}
+
+inline bool originInsideBounds(float3 origin, float3 minimum, float3 maximum) {
+    return all(origin >= minimum) && all(origin <= maximum);
+}
+
+inline int3 macroCellAt(float3 origin, float3 direction, float distance) {
+    return int3(floor((origin + direction * (distance + kTraceEpsilon)) / 8.0f));
+}
+
+inline bool traceSDFInstance(float3 origin,
+                            float3 direction,
+                            float minimumDistance,
+                            float maximumDistance,
+                            thread const SDFInstance &instance,
+                            constant SceneUniforms &scene,
+                            thread HybridHit &hit,
+                            thread TraceCounts &counts) {
+    float nearT;
+    float farT;
+    if (!intersectBounds(origin, direction, instance.sweptBoundsMin.xyz,
+                         instance.sweptBoundsMax.xyz, nearT, farT)) {
+        return false;
+    }
+    float t = max(minimumDistance, max(nearT, 0.0f));
+    float limit = min(maximumDistance, farT);
+    uint stepBudget = instance.metadata.x == 3u ? scene.budgets.z
+        : (instance.metadata.x == 1u ? scene.budgets.y : scene.budgets.x);
+    for (uint step = 0u; step < stepBudget && t <= limit; ++step) {
+        float3 point = origin + direction * t;
+        float distance = distanceToInstance(point, instance, scene.budgets.w);
+        ++counts.sdfSamples;
+        if (!isfinite(distance)) {
+            ++counts.budgetOverflows;
+            return false;
+        }
+        if (abs(distance) <= 0.0015f) {
+            hit.t = t;
+            hit.normal = sdfNormal(point, instance, scene.budgets.w);
+            hit.material = instance.metadata.y;
+            hit.primitiveKind = 1u;
+            hit.stableID = instance.metadata.w;
+            return true;
+        }
+        t += max(abs(distance) * 0.8f, 0.001f);
+    }
+    if (t <= limit) {
+        ++counts.budgetOverflows;
+    }
+    return false;
+}
+
+inline bool traceMixedScene(texture3d<uint, access::read> voxels,
+                            texture3d<uint, access::read> mixed,
+                            device const CellHeader *headers,
+                            device const uint *sdfRefs,
+                            device const uint *gaussianRefs,
+                            device const SDFInstance *sdfs,
+                            device const Gaussian *gaussians,
+                            constant SceneUniforms &scene,
+                            float3 origin,
+                            float3 direction,
+                            float maximumDistance,
+                            thread HybridHit &hit,
+                            thread TraceCounts &counts) {
+    float nearT;
+    float farT;
+    if (!intersectWorld(origin, direction, nearT, farT)) {
+        return false;
+    }
+    farT = min(farT, maximumDistance);
+    float t = nearT;
+    float bestT = farT;
+    HybridHit bestHit;
+    bool found = false;
+    uint level = min(scene.grid.z, 6u);
+    float3 inverseDirection = 1.0f / copysign(max(abs(direction), float3(1.0e-7f)), direction);
+
+    for (uint step = 0u; step < 4096u && t < farT; ++step) {
+        ++counts.hierarchicalSteps;
+        float3 point = origin + direction * (t + kTraceEpsilon);
+        int3 macroCell = int3(floor(point / 8.0f));
+        if (any(macroCell < int3(0)) || any(macroCell >= int3(64))) {
+            break;
+        }
+        uint flags = mixed.read(uint3(macroCell) >> level, level).x;
+        if (flags != 0u && level > 0u) {
+            --level;
+            continue;
+        }
+
+        float nodeSize = 8.0f * float(1u << level);
+        float3 nodeMinimum = floor(point / nodeSize) * nodeSize;
+        float3 boundary = select(nodeMinimum, nodeMinimum + nodeSize, direction > 0.0f);
+        float3 exits = (boundary - origin) * inverseDirection;
+        float3 candidates = select(float3(INFINITY), exits, exits > t + kTraceEpsilon);
+        float nodeExit = min(candidates.x, min(candidates.y, candidates.z));
+        if (!isfinite(nodeExit)) {
+            break;
+        }
+
+        if (flags == 0u) {
+            t = nodeExit + kTraceEpsilon;
+            level = min(scene.grid.z, level + 1u);
+            continue;
+        }
+
+        uint cellIndex = uint(macroCell.x) + 64u * (uint(macroCell.y) + 64u * uint(macroCell.z));
+        CellHeader header = headers[cellIndex];
+        if ((flags & 1u) != 0u) {
+            TraceHit voxelHit;
+            uint voxelSteps = 0u;
+            if (traceVoxelRange(voxels, origin, direction, t, min(nodeExit, bestT), 0u, voxelHit, voxelSteps)
+                && voxelHit.t < bestT) {
+                bestT = voxelHit.t;
+                bestHit.t = voxelHit.t;
+                bestHit.normal = voxelHit.normal;
+                bestHit.material = voxelHit.material;
+                bestHit.primitiveKind = 0u;
+                bestHit.stableID = 0xffffffffu;
+                found = true;
+            }
+            counts.voxelSteps += voxelSteps;
+        }
+
+        uint sdfCount = min(header.packedCounts & 0xffffu, 8u);
+        for (uint reference = 0u; reference < sdfCount; ++reference) {
+            uint instanceIndex = sdfRefs[header.sdfOffset + reference];
+            if (instanceIndex >= scene.counts.x) {
+                ++counts.budgetOverflows;
+                continue;
+            }
+            SDFInstance instance = sdfs[instanceIndex];
+            float sweptNear;
+            float sweptFar;
+            if (!intersectBounds(origin, direction, instance.sweptBoundsMin.xyz,
+                                 instance.sweptBoundsMax.xyz, sweptNear, sweptFar)) {
+                continue;
+            }
+            int3 evaluationCell = originInsideBounds(
+                origin, instance.sweptBoundsMin.xyz, instance.sweptBoundsMax.xyz
+            ) ? macroCellAt(origin, direction, 0.0f) : macroCellAt(origin, direction, max(sweptNear, 0.0f));
+            if (any(evaluationCell != macroCell)) {
+                continue;
+            }
+            HybridHit sdfHit;
+            if (traceSDFInstance(origin, direction, t, min(bestT, nodeExit), instance, scene, sdfHit, counts)
+                && sdfHit.t < bestT) {
+                bestT = sdfHit.t;
+                bestHit = sdfHit;
+                found = true;
+            }
+        }
+
+        uint gaussianCount = min(header.packedCounts >> 16u, 16u);
+        for (uint reference = 0u; reference < gaussianCount; ++reference) {
+            uint gaussianIndex = gaussianRefs[header.gaussianOffset + reference];
+            if (gaussianIndex >= scene.counts.y) {
+                ++counts.budgetOverflows;
+                continue;
+            }
+            Gaussian gaussian = gaussians[gaussianIndex];
+            float radius = max(gaussian.localCenterSigma.w, 0.001f) * 3.0f;
+            float gaussianNear;
+            float gaussianFar;
+            if (intersectBounds(origin, direction, gaussian.localCenterSigma.xyz - radius,
+                                gaussian.localCenterSigma.xyz + radius, gaussianNear, gaussianFar)
+                && all(macroCellAt(origin, direction, max(gaussianNear, 0.0f)) == macroCell)) {
+                ++counts.gaussianSamples;
+            }
+        }
+
+        if (found && bestT <= nodeExit + kTraceEpsilon) {
+            hit = bestHit;
+            return true;
+        }
+        t = nodeExit + kTraceEpsilon;
+        level = min(scene.grid.z, 1u);
+    }
+    if (counts.hierarchicalSteps >= 4096u) {
+        ++counts.budgetOverflows;
+    }
+    if (found) {
+        hit = bestHit;
+    }
+    return found;
 }
 
 inline bool traceOcclusionExact(texture3d<uint, access::read> volume,

@@ -79,3 +79,19 @@ struct TraceHit {
     float3 normal;
     uint material;
 };
+
+struct HybridHit {
+    float t;
+    float3 normal;
+    uint material;
+    uint primitiveKind;
+    uint stableID;
+};
+
+struct TraceCounts {
+    uint hierarchicalSteps;
+    uint voxelSteps;
+    uint sdfSamples;
+    uint gaussianSamples;
+    uint budgetOverflows;
+};

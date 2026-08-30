@@ -3,6 +3,16 @@ import XCTest
 @testable import MicroCubeMetal
 
 final class ShadowTraversalTests: XCTestCase {
+    func testExactShadowBatchHasNoFalseOrMissedOcclusions() throws {
+        let report = try runExactShadowBatch()
+
+        XCTAssertEqual(report.sampleCount, 10_380)
+        XCTAssertEqual(report.legacyMismatch, 404)
+        XCTAssertEqual(report.falseShadows, 0)
+        XCTAssertEqual(report.missedShadows, 0)
+        XCTAssertLessThanOrEqual(report.maxHitDistanceError, 0.002)
+    }
+
     func testOffRayVoxelInsideOccupiedMipCellDoesNotDarkenSurface() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device unavailable")
@@ -10,7 +20,7 @@ final class ShadowTraversalTests: XCTestCase {
         let library = try makeLibrary(device: device)
         let fixturePipeline = try makePipeline(name: "generateShadowFixture", library: library, device: device)
         let reductionPipeline = try makePipeline(name: "reduceOccupancy", library: library, device: device)
-        let raycastPipeline = try makePipeline(name: "raycastHybrid", library: library, device: device)
+        let raycastPipeline = try makePipeline(name: "raycastShadowFixture", library: library, device: device)
         let commandQueue = try XCTUnwrap(device.makeCommandQueue())
 
         let clearPath = try render(
@@ -52,6 +62,41 @@ final class ShadowTraversalTests: XCTestCase {
                 volume.write(uint4(receiver || neighbor ? 1u : 0u), uint3(gid.x, y, gid.y));
             }
         }
+
+        kernel void raycastShadowFixture(
+            texture3d<uint, access::read> volume [[texture(0)]],
+            texture2d<float, access::write> output [[texture(1)]],
+            constant FrameUniforms &uniforms [[buffer(0)]],
+            uint2 gid [[thread_position_in_grid]]) {
+            if (any(gid >= uniforms.viewportAndOptions.xy)) return;
+            float2 pixel = float2(gid) + 0.5f;
+            float horizontal = (2.0f * pixel.x / float(uniforms.viewportAndOptions.x) - 1.0f)
+                * uniforms.cameraForwardAndFOV.w * uniforms.cameraRightAndAspect.w;
+            float vertical = (1.0f - 2.0f * pixel.y / float(uniforms.viewportAndOptions.y))
+                * uniforms.cameraForwardAndFOV.w;
+            float3 direction = normalize(uniforms.cameraForwardAndFOV.xyz
+                + uniforms.cameraRightAndAspect.xyz * horizontal
+                + uniforms.cameraUpAndMaxDistance.xyz * vertical);
+            float3 origin = uniforms.cameraPositionAndTime.xyz;
+            float3 sunDirection = normalize(uniforms.sunDirectionAndAmbient.xyz);
+            float3 color = skyColor(direction, sunDirection);
+            TraceHit hit;
+            if (traceVolume(volume, origin, direction, uniforms.cameraUpAndMaxDistance.w, 0u, hit)) {
+                float3 point = origin + direction * hit.t;
+                float diffuse = max(0.0f, dot(hit.normal, sunDirection));
+                float lighting = uniforms.sunDirectionAndAmbient.w
+                    + (1.0f - uniforms.sunDirectionAndAmbient.w) * diffuse;
+                lighting *= voxelAO(volume, point, hit.normal);
+                TraceHit shadowHit;
+                if (diffuse > 0.0f && traceOcclusionExact(
+                    volume, point + hit.normal * 0.035f, sunDirection, 100.0f, shadowHit
+                )) {
+                    lighting *= 0.45f;
+                }
+                color = kPalette[min(hit.material, 42u)] * lighting;
+            }
+            output.write(float4(color, 1.0f), gid);
+        }
         """
         return try device.makeLibrary(source: source, options: nil)
     }
@@ -63,6 +108,104 @@ final class ShadowTraversalTests: XCTestCase {
     ) throws -> MTLComputePipelineState {
         let function = try XCTUnwrap(library.makeFunction(name: name))
         return try device.makeComputePipelineState(function: function)
+    }
+
+    private func runExactShadowBatch() throws -> ShadowBatchReport {
+        let source = """
+        kernel void probeShadowBatch(
+            texture3d<uint, access::read> volume [[texture(0)]],
+            device float4 *output [[buffer(0)]],
+            uint gid [[thread_position_in_grid]]) {
+            if (gid >= 10380u) return;
+            float y = gid < 404u ? 0.5f : (gid < 1404u ? 1.5f : 3.5f);
+            float3 origin(0.5f, y, gid < 1404u ? 0.5f : 3.5f);
+            TraceHit legacyHit;
+            TraceHit exactHit;
+            bool legacy = traceVolume(volume, origin, float3(1.0f, 0.0f, 0.0f), 32.0f, 1u, legacyHit);
+            bool exact = traceOcclusionExact(volume, origin, float3(1.0f, 0.0f, 0.0f), 32.0f, exactHit);
+            output[gid] = float4(legacy ? 1.0f : 0.0f, exact ? 1.0f : 0.0f,
+                                 exact ? exactHit.t : -1.0f, 0.0f);
+        }
+        """
+        let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
+        let reduction = try MetalProbeHarness.makePipeline(name: "reduceOccupancy", library: library, device: device)
+        let probe = try MetalProbeHarness.makePipeline(name: "probeShadowBatch", library: library, device: device)
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .r8Uint
+        descriptor.width = 512
+        descriptor.height = 512
+        descriptor.depth = 512
+        descriptor.mipmapLevelCount = 10
+        descriptor.storageMode = .shared
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        let volume = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        var occupied: UInt8 = 1
+        volume.replace(
+            region: MTLRegionMake3D(10, 1, 0, 1, 1, 1),
+            mipmapLevel: 0,
+            slice: 0,
+            withBytes: &occupied,
+            bytesPerRow: 1,
+            bytesPerImage: 1
+        )
+        let output = try XCTUnwrap(device.makeBuffer(
+            length: 10_380 * MemoryLayout<SIMD4<Float>>.stride,
+            options: .storageModeShared
+        ))
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        for level in 1..<10 {
+            let sourceTexture = try XCTUnwrap(volume.makeTextureView(
+                pixelFormat: .r8Uint,
+                textureType: .type3D,
+                levels: (level - 1)..<level,
+                slices: 0..<1
+            ))
+            let destination = try XCTUnwrap(volume.makeTextureView(
+                pixelFormat: .r8Uint,
+                textureType: .type3D,
+                levels: level..<(level + 1),
+                slices: 0..<1
+            ))
+            let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+            encoder.setComputePipelineState(reduction)
+            encoder.setTexture(sourceTexture, index: 0)
+            encoder.setTexture(destination, index: 1)
+            encoder.dispatchThreads(
+                MTLSize(width: destination.width, height: destination.height, depth: destination.depth),
+                threadsPerThreadgroup: MTLSize(width: 4, height: 4, depth: 4)
+            )
+            encoder.endEncoding()
+        }
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(probe)
+        encoder.setTexture(volume, index: 0)
+        encoder.setBuffer(output, offset: 0, index: 0)
+        encoder.dispatchThreads(
+            MTLSize(width: 10_380, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: min(256, probe.maxTotalThreadsPerThreadgroup), height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
+
+        let values = output.contents().bindMemory(to: SIMD4<Float>.self, capacity: 10_380)
+        var report = ShadowBatchReport(sampleCount: 10_380)
+        for index in 0..<10_380 {
+            let value = values[index]
+            let legacy = value.x != 0
+            let exact = value.y != 0
+            let reference = (404..<1404).contains(index)
+            if legacy != reference { report.legacyMismatch += 1 }
+            if exact && !reference { report.falseShadows += 1 }
+            if !exact && reference { report.missedShadows += 1 }
+            if reference && exact {
+                report.maxHitDistanceError = max(report.maxHitDistanceError, abs(value.z - 9.5))
+            }
+        }
+        return report
     }
 
     private func render(
@@ -163,4 +306,12 @@ final class ShadowTraversalTests: XCTestCase {
         )
         return SIMD3<Float>(pixel[0], pixel[1], pixel[2])
     }
+}
+
+private struct ShadowBatchReport {
+    let sampleCount: Int
+    var legacyMismatch = 0
+    var falseShadows = 0
+    var missedShadows = 0
+    var maxHitDistanceError: Float = 0
 }

@@ -222,12 +222,21 @@ final class Renderer: NSObject, MTKViewDelegate {
         let width = drawable.texture.width
         let height = drawable.texture.height
         var uniforms = makeUniforms(width: width, height: height, time: now)
+        var sceneUniforms = makeSceneUniforms()
 
         encoder.label = "MicroCube raycast"
         encoder.setComputePipelineState(raycastPipeline)
         encoder.setTexture(volumeTexture, index: 0)
-        encoder.setTexture(drawable.texture, index: 1)
+        encoder.setTexture(sceneResources.mixedOccupancy, index: 1)
+        encoder.setTexture(drawable.texture, index: 3)
         encoder.setBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 0)
+        encoder.setBytes(&sceneUniforms, length: MemoryLayout<SceneUniforms>.stride, index: 1)
+        encoder.setBuffer(sceneResources.cellHeaders, offset: 0, index: 2)
+        encoder.setBuffer(sceneResources.cellSDFRefs, offset: 0, index: 3)
+        encoder.setBuffer(sceneResources.cellGaussianRefs, offset: 0, index: 4)
+        encoder.setBuffer(sceneResources.sdfInstances, offset: 0, index: 5)
+        encoder.setBuffer(sceneResources.gaussians, offset: 0, index: 6)
+        encoder.setBuffer(sceneResources.materials, offset: 0, index: 8)
         encoder.dispatchThreads(
             MTLSize(width: width, height: height, depth: 1),
             threadsPerThreadgroup: raycastThreadgroupSize
@@ -438,6 +447,21 @@ final class Renderer: NSObject, MTKViewDelegate {
             sunDirectionAndAmbient: SIMD4<Float>(sun.x, sun.y, sun.z, 0.42),
             viewportAndOptions: SIMD4<UInt32>(UInt32(width), UInt32(height), frameIndex, 0b111),
             fogAndExposure: SIMD4<Float>(0.83, 1.0, 1.0, Float(renderScale))
+        )
+    }
+
+    private func makeSceneUniforms() -> SceneUniforms {
+        let scene = sceneResources.scene
+        return SceneUniforms(
+            counts: SIMD4<UInt32>(
+                UInt32(scene.sdfInstances.count),
+                UInt32(scene.gaussians.count),
+                UInt32(scene.lights.count),
+                UInt32(scene.materials.count)
+            ),
+            grid: SIMD4<UInt32>(64, 8, 6, UInt32(scene.activeVolumeCells.count)),
+            fog: SIMD4<Float>(0.018, 0.62, 0, 0),
+            budgets: SIMD4<UInt32>(24, 32, 48, 8)
         )
     }
 

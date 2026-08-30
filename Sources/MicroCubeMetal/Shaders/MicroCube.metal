@@ -206,10 +206,19 @@ kernel void injectVolumeLighting(texture3d<half, access::write> volumeLighting [
     volumeLighting.write(half4(0.0h, 0.0h, 0.0h, 1.0h), gid);
 }
 
-kernel void raycastHybrid(texture3d<uint, access::read> volume [[texture(0)]],
-                    texture2d<float, access::write> output [[texture(1)]],
-                    constant FrameUniforms &uniforms [[buffer(0)]],
-                    uint2 gid [[thread_position_in_grid]]) {
+kernel void raycastHybrid(
+    texture3d<uint, access::read> volume [[texture(0)]],
+    texture3d<uint, access::read> mixed [[texture(1)]],
+    texture2d<float, access::write> output [[texture(3)]],
+    constant FrameUniforms &uniforms [[buffer(0)]],
+    constant SceneUniforms &scene [[buffer(1)]],
+    device const CellHeader *headers [[buffer(2)]],
+    device const uint *sdfRefs [[buffer(3)]],
+    device const uint *gaussianRefs [[buffer(4)]],
+    device const SDFInstance *sdfs [[buffer(5)]],
+    device const Gaussian *gaussians [[buffer(6)]],
+    device const Material *materials [[buffer(8)]],
+    uint2 gid [[thread_position_in_grid]]) {
     uint2 viewport = uniforms.viewportAndOptions.xy;
     if (any(gid >= viewport)) {
         return;
@@ -225,15 +234,21 @@ kernel void raycastHybrid(texture3d<uint, access::read> volume [[texture(0)]],
     float3 origin = uniforms.cameraPositionAndTime.xyz;
     float3 sunDirection = normalize(uniforms.sunDirectionAndAmbient.xyz);
     float3 color;
-    TraceHit hit;
+    HybridHit hit;
+    TraceCounts counts = {};
 
-    if (traceVolume(volume, origin, direction, uniforms.cameraUpAndMaxDistance.w, 0u, hit)) {
+    if (traceMixedScene(
+        volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+        origin, direction, uniforms.cameraUpAndMaxDistance.w, hit, counts
+    )) {
         float3 point = origin + direction * hit.t;
         float diffuse = max(0.0f, dot(hit.normal, sunDirection));
         float lighting = uniforms.sunDirectionAndAmbient.w
             + (1.0f - uniforms.sunDirectionAndAmbient.w) * diffuse;
         lighting *= hit.normal.y > 0.0f ? 1.0f : (hit.normal.y < 0.0f ? 0.62f : (hit.normal.x != 0.0f ? 0.82f : 0.9f));
-        lighting *= voxelAO(volume, point, hit.normal);
+        if (hit.primitiveKind == 0u) {
+            lighting *= voxelAO(volume, point, hit.normal);
+        }
 
         if (diffuse > 0.0f) {
             TraceHit shadowHit;
@@ -242,7 +257,9 @@ kernel void raycastHybrid(texture3d<uint, access::read> volume [[texture(0)]],
             }
         }
 
-        color = kPalette[min(hit.material, 42u)] * lighting;
+        color = hit.primitiveKind == 0u
+            ? kPalette[min(hit.material, 42u)] * lighting
+            : materials[min(hit.material, max(scene.counts.w, 1u) - 1u)].baseColorRoughness.xyz * lighting;
         float fogStart = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.x;
         float fogEnd = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.y;
         float fog = saturate((hit.t - fogStart) / max(0.001f, fogEnd - fogStart));
