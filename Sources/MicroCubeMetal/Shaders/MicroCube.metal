@@ -274,6 +274,34 @@ kernel void injectVolumeLighting(
     volumeLighting.write(half4(half3(radiance), half(sunVisibility)), cell);
 }
 
+inline float3 shadeSecondaryHit(float3 point,
+                                float3 normal,
+                                float3 baseColor,
+                                float3 sunDirection,
+                                float ambient,
+                                device const Light *lights,
+                                constant SceneUniforms &scene,
+                                float time) {
+    uint opticalRayCount = 0u;
+    float3 color = shadeSecondaryLighting(
+        point, normal, baseColor, sunDirection, ambient, opticalRayCount
+    );
+    for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
+        Light source = lights[index];
+        Light light = animateLight(source, index, time);
+        float3 delta = light.positionRadius.xyz - point;
+        float distance = max(length(delta), 0.01f);
+        if (distance >= light.positionRadius.w) {
+            continue;
+        }
+        float falloff = 1.0f - distance / light.positionRadius.w;
+        float diffuse = max(dot(normal, delta / distance), 0.0f);
+        color += baseColor * light.colorIntensity.xyz * light.colorIntensity.w
+            * diffuse * falloff * falloff * 0.12f;
+    }
+    return color;
+}
+
 kernel void raycastHybrid(
     texture3d<uint, access::read> volume [[texture(0)]],
     texture3d<uint, access::read> mixed [[texture(1)]],
@@ -314,6 +342,7 @@ kernel void raycastHybrid(
 
     if (hasHit) {
         float3 point = origin + direction * hit.t;
+        bool isGlass = hit.primitiveKind == 2u;
         float diffuse = max(0.0f, dot(hit.normal, sunDirection));
         float lighting = uniforms.sunDirectionAndAmbient.w
             + (1.0f - uniforms.sunDirectionAndAmbient.w) * diffuse;
@@ -322,7 +351,7 @@ kernel void raycastHybrid(
             lighting *= voxelAO(volume, point, hit.normal);
         }
 
-        if (diffuse > 0.0f) {
+        if (!isGlass && diffuse > 0.0f) {
             TraceHit shadowHit;
             if (traceOcclusionExact(volume, point + hit.normal * 0.035f, sunDirection, 100.0f, shadowHit)) {
                 lighting *= 0.45f;
@@ -334,9 +363,11 @@ kernel void raycastHybrid(
         float3 baseColor = hit.primitiveKind == 0u
             ? kPalette[min(hit.material, 42u)]
             : materials[materialIndex].baseColorRoughness.xyz;
+        bool isReflective = !isGlass && hit.primitiveKind != 0u
+            && materials[materialIndex].emissionMetalness.w > 0.0f;
         color = baseColor * lighting;
         uint selectedMask = 0u;
-        for (uint selection = 0u; selection < min(scene.counts.z, 4u); ++selection) {
+        for (uint selection = 0u; selection < min(scene.counts.z, isGlass ? 0u : 4u); ++selection) {
             uint bestIndex = 0u;
             float bestScore = -1.0f;
             for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
@@ -375,6 +406,69 @@ kernel void raycastHybrid(
         }
         if (hit.primitiveKind != 0u) {
             color += materials[materialIndex].emissionMetalness.xyz;
+        }
+        if (isGlass) {
+            OpticalPath path;
+            Material material = materials[materialIndex];
+            if (traceOpticalSphere(
+                origin, direction, hit.opticalSphere.xyz, hit.opticalSphere.w,
+                material.opticalAbsorptionIOR.w, material.opticalAbsorptionIOR.xyz, path
+            )) {
+                HybridHit secondaryHit;
+                TraceCounts secondaryCounts = {};
+                bool secondaryFound = traceMixedScene(
+                    volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                    path.secondaryOrigin, path.exitDirection, uniforms.cameraUpAndMaxDistance.w,
+                    uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts
+                );
+                float3 transmittedColor = skyColor(path.exitDirection, sunDirection);
+                if (secondaryFound) {
+                    uint secondaryMaterial = secondaryHit.primitiveKind == 0u
+                        ? 0u : min(secondaryHit.material, max(scene.counts.w, 1u) - 1u);
+                    float3 secondaryBase = secondaryHit.primitiveKind == 0u
+                        ? kPalette[min(secondaryHit.material, 42u)]
+                        : materials[secondaryMaterial].baseColorRoughness.xyz;
+                    transmittedColor = shadeSecondaryHit(
+                        path.secondaryOrigin + path.exitDirection * secondaryHit.t, secondaryHit.normal,
+                        secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w, lights, scene,
+                        uniforms.cameraPositionAndTime.w
+                    );
+                    if (secondaryHit.primitiveKind != 0u) {
+                        transmittedColor += materials[secondaryMaterial].emissionMetalness.xyz;
+                    }
+                }
+                float reflection = fresnelSchlick(
+                    max(dot(-direction, hit.normal), 0.0f), material.opticalAbsorptionIOR.w
+                );
+                color = mix(transmittedColor * path.transmission,
+                            skyColor(path.reflectionDirection, sunDirection), reflection);
+            }
+        } else if (isReflective) {
+            float3 reflectionDirection = normalize(reflect(direction, hit.normal));
+            HybridHit secondaryHit;
+            TraceCounts secondaryCounts = {};
+            bool secondaryFound = traceMixedScene(
+                volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                point + hit.normal * 0.01f, reflectionDirection, uniforms.cameraUpAndMaxDistance.w,
+                uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts
+            );
+            float3 reflectionColor = skyColor(reflectionDirection, sunDirection);
+            if (secondaryFound) {
+                uint secondaryMaterial = secondaryHit.primitiveKind == 0u
+                    ? 0u : min(secondaryHit.material, max(scene.counts.w, 1u) - 1u);
+                float3 secondaryBase = secondaryHit.primitiveKind == 0u
+                    ? kPalette[min(secondaryHit.material, 42u)]
+                    : materials[secondaryMaterial].baseColorRoughness.xyz;
+                reflectionColor = shadeSecondaryHit(
+                    point + reflectionDirection * secondaryHit.t, secondaryHit.normal,
+                    secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w, lights, scene,
+                    uniforms.cameraPositionAndTime.w
+                );
+                if (secondaryHit.primitiveKind != 0u) {
+                    reflectionColor += materials[secondaryMaterial].emissionMetalness.xyz;
+                }
+            }
+            color = mix(color, reflectionColor, saturate(materials[materialIndex].emissionMetalness.w));
         }
         float fogStart = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.x;
         float fogEnd = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.y;

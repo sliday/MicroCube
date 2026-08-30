@@ -106,6 +106,107 @@ inline float homogeneousTransmittance(float extinction, float distance) {
     return exp(-max(extinction, 0.0f) * max(distance, 0.0f));
 }
 
+struct OpticalPath {
+    float3 entryDirection;
+    float3 exitDirection;
+    float3 reflectionDirection;
+    float3 transmission;
+    float3 secondaryOrigin;
+    uint totalInternalReflection;
+};
+
+inline bool traceOpticalSphere(float3 origin,
+                               float3 direction,
+                               float3 center,
+                               float radius,
+                               float indexOfRefraction,
+                               float3 absorption,
+                               thread OpticalPath &path) {
+    float3 offset = origin - center;
+    float projection = dot(offset, direction);
+    float discriminant = projection * projection - dot(offset, offset) + radius * radius;
+    if (discriminant < 0.0f) {
+        return false;
+    }
+    float root = sqrt(discriminant);
+    float nearT = -projection - root;
+    float farT = -projection + root;
+    if (farT <= kTraceEpsilon) {
+        return false;
+    }
+
+    float safeIOR = max(indexOfRefraction, 1.0f);
+    bool originInside = nearT <= kTraceEpsilon;
+    float entryT = originInside ? farT : nearT;
+    float3 entryPoint = origin + direction * entryT;
+    float3 entryNormal = normalize(entryPoint - center);
+    path.reflectionDirection = normalize(reflect(direction, entryNormal));
+    path.totalInternalReflection = 0u;
+
+    if (originInside) {
+        float3 exitDirection = refract(direction, -entryNormal, safeIOR);
+        if (length_squared(exitDirection) <= 1.0e-8f) {
+            path.entryDirection = direction;
+            path.exitDirection = path.reflectionDirection;
+            path.secondaryOrigin = entryPoint + path.reflectionDirection * 0.01f;
+            path.transmission = exp(-max(absorption, float3(0.0f)) * entryT);
+            path.totalInternalReflection = 1u;
+            return true;
+        }
+        path.entryDirection = direction;
+        path.exitDirection = normalize(exitDirection);
+        path.secondaryOrigin = entryPoint + path.exitDirection * 0.01f;
+        path.transmission = exp(-max(absorption, float3(0.0f)) * entryT);
+        return true;
+    }
+
+    float3 insideDirection = refract(direction, entryNormal, 1.0f / safeIOR);
+    if (length_squared(insideDirection) <= 1.0e-8f) {
+        path.entryDirection = path.reflectionDirection;
+        path.exitDirection = path.reflectionDirection;
+        path.secondaryOrigin = entryPoint + path.reflectionDirection * 0.01f;
+        path.transmission = float3(0.0f);
+        path.totalInternalReflection = 1u;
+        return true;
+    }
+    insideDirection = normalize(insideDirection);
+    float3 insideOrigin = entryPoint + insideDirection * kTraceEpsilon;
+    float3 insideOffset = insideOrigin - center;
+    float exitProjection = dot(insideOffset, insideDirection);
+    float exitDiscriminant = exitProjection * exitProjection - dot(insideOffset, insideOffset) + radius * radius;
+    float exitT = -exitProjection + sqrt(max(exitDiscriminant, 0.0f));
+    float3 exitPoint = insideOrigin + insideDirection * exitT;
+    float3 exitNormal = normalize(exitPoint - center);
+    float3 exitDirection = refract(insideDirection, -exitNormal, safeIOR);
+    path.entryDirection = insideDirection;
+    path.transmission = exp(-max(absorption, float3(0.0f)) * exitT);
+    if (length_squared(exitDirection) <= 1.0e-8f) {
+        path.exitDirection = normalize(reflect(insideDirection, exitNormal));
+        path.secondaryOrigin = exitPoint + path.exitDirection * 0.01f;
+        path.totalInternalReflection = 1u;
+        return true;
+    }
+    path.exitDirection = normalize(exitDirection);
+    path.secondaryOrigin = exitPoint + path.exitDirection * 0.01f;
+    return true;
+}
+
+inline float fresnelSchlick(float cosine, float indexOfRefraction) {
+    float ratio = (indexOfRefraction - 1.0f) / (indexOfRefraction + 1.0f);
+    float baseReflectance = ratio * ratio;
+    return baseReflectance + (1.0f - baseReflectance) * pow(1.0f - saturate(cosine), 5.0f);
+}
+
+inline float3 shadeSecondaryLighting(float3 point,
+                                     float3 normal,
+                                     float3 baseColor,
+                                     float3 sunDirection,
+                                     float ambient,
+                                     thread uint &opticalRayCount) {
+    float direct = max(dot(normal, sunDirection), 0.0f);
+    return baseColor * (ambient + (1.0f - ambient) * direct);
+}
+
 inline float gaussianDensity(float3 point, thread const Gaussian &gaussian) {
     float3 delta = point - gaussian.localCenterSigma.xyz;
     float sigma = max(gaussian.localCenterSigma.w, 0.001f);
@@ -309,6 +410,33 @@ inline bool traceSDFInstance(float3 origin,
                          instance.sweptBoundsMax.xyz, nearT, farT)) {
         return false;
     }
+    if (instance.metadata.x == 4u) {
+        float3 center = instance.positionScale.xyz;
+        float radius = max(instance.positionScale.w, 0.001f);
+        float3 offset = origin - center;
+        float projection = dot(offset, direction);
+        float discriminant = projection * projection - dot(offset, offset) + radius * radius;
+        if (discriminant < 0.0f) {
+            return false;
+        }
+        float root = sqrt(discriminant);
+        float hitT = -projection - root;
+        if (hitT < minimumDistance) {
+            hitT = -projection + root;
+        }
+        if (hitT < minimumDistance || hitT > maximumDistance || hitT < 0.0f) {
+            return false;
+        }
+        float3 point = origin + direction * hitT;
+        hit.t = hitT;
+        hit.normal = normalize(point - center);
+        hit.material = instance.metadata.y;
+        hit.primitiveKind = 2u;
+        hit.stableID = instance.metadata.w;
+        hit.opticalSphere = float4(center, radius);
+        ++counts.sdfSamples;
+        return true;
+    }
     float t = max(minimumDistance, max(nearT, 0.0f));
     float limit = min(maximumDistance, farT);
     uint stepBudget = instance.metadata.x == 3u ? scene.budgets.z
@@ -327,6 +455,7 @@ inline bool traceSDFInstance(float3 origin,
             hit.material = instance.metadata.y;
             hit.primitiveKind = 1u;
             hit.stableID = instance.metadata.w;
+            hit.opticalSphere = float4(0.0f);
             return true;
         }
         t += max(abs(distance) * 0.8f, 0.001f);
@@ -406,6 +535,7 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
                 bestHit.material = voxelHit.material;
                 bestHit.primitiveKind = 0u;
                 bestHit.stableID = 0xffffffffu;
+                bestHit.opticalSphere = float4(0.0f);
                 found = true;
             }
             counts.voxelSteps += voxelSteps;

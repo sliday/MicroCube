@@ -86,6 +86,7 @@ struct HybridHit {
     uint material;
     uint primitiveKind;
     uint stableID;
+    float4 opticalSphere;
 };
 
 struct TraceCounts {

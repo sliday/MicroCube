@@ -37,6 +37,14 @@ struct SceneData {
             parameters: SIMD4<Float>(8, 0, 0, 0),
             metadata: SIMD4<UInt32>(3, 2, 0, 1)
         )
+        let glassSphere = SDFInstance(
+            sweptBoundsMin: SIMD4<Float>(282, 106, 300, 0),
+            sweptBoundsMax: SIMD4<Float>(292, 116, 310, 0),
+            positionScale: SIMD4<Float>(287, 111, 305, 5),
+            rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
+            parameters: .zero,
+            metadata: SIMD4<UInt32>(4, 4, 0, 8)
+        )
         let creatureCenters = [
             SIMD3<Float>(270, 96, 292),
             SIMD3<Float>(281, 95, 300),
@@ -92,7 +100,7 @@ struct SceneData {
             ),
             Material(
                 baseColorRoughness: SIMD4<Float>(0.34, 0.37, 0.32, 0.38),
-                emissionMetalness: .zero,
+                emissionMetalness: SIMD4<Float>(0, 0, 0, 0.34),
                 opticalAbsorptionIOR: SIMD4<Float>(0, 0, 0, 1),
                 transmissionAcoustic: .zero
             ),
@@ -107,10 +115,16 @@ struct SceneData {
                 emissionMetalness: SIMD4<Float>(0.35, 0.05, 0.02, 0),
                 opticalAbsorptionIOR: SIMD4<Float>(0, 0, 0, 1),
                 transmissionAcoustic: .zero
+            ),
+            Material(
+                baseColorRoughness: SIMD4<Float>(0.42, 0.78, 0.84, 0.04),
+                emissionMetalness: .zero,
+                opticalAbsorptionIOR: SIMD4<Float>(0.18, 0.07, 0.03, 1.5),
+                transmissionAcoustic: .zero
             )
         ]
         return try build(
-            sdfInstances: [sculpture, fractal] + creatures,
+            sdfInstances: [sculpture, fractal, glassSphere] + creatures,
             gaussians: gaussians,
             lights: lights,
             materials: materials
