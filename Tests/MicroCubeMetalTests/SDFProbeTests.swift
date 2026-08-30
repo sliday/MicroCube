@@ -16,7 +16,10 @@ final class SDFProbeTests: XCTestCase {
             negativeExteriorStepCount: Int(values[7]),
             fractalCoverage: fractalCoverage
         )
-        let data = try ProbeEnvelope.evaluated(probe: "sdf", device: "test-device", metrics: metrics).encodedJSON()
+        let data = try ProbeEnvelope.evaluated(
+            probe: "sdf", device: try XCTUnwrap(MTLCreateSystemDefaultDevice()).name, metrics: metrics
+        ).encodedJSON()
+        try MetalProbeHarness.writeEvidence(data, named: "sdf")
         let decoded = try ProbeEnvelope<SDFProbeMetrics>.decodeValidated(data)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let encodedMetrics = try XCTUnwrap(object["metrics"] as? [String: Any])

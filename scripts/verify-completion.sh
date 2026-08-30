@@ -5,6 +5,7 @@ set -o pipefail
 
 SCRIPT_DIR=${0:A:h}
 EVIDENCE_DIR=${1:-"$SCRIPT_DIR/../dist/evidence"}
+EVIDENCE_DIR=${EVIDENCE_DIR:a}
 REPORT_PATH=${2:-"$EVIDENCE_DIR/completion.json"}
 failures=()
 
@@ -29,6 +30,13 @@ require_passing_status() {
     local file_path=$1
     [[ -f "$file_path" ]] || { fail "Missing $(basename "$file_path")."; return; }
     jq -e '.status == "pass"' "$file_path" >/dev/null 2>&1 || fail "$(basename "$file_path") does not pass."
+}
+
+validate_probe() {
+    local probe=$1 file_path="$EVIDENCE_DIR/$1.json"
+    [[ -f "$file_path" ]] || { fail "Missing $probe.json."; return; }
+    jq -s -e --arg probe "$probe" -f "$SCRIPT_DIR/validate-probe.jq" "$file_path" >/dev/null 2>&1 ||
+        fail "$probe.json is not valid probe evidence."
 }
 
 validate_visual_review() {
@@ -122,7 +130,8 @@ validate_visual_review() {
             .schemaVersion == 1 and .status == "pass" and .failure == null and
             (.device | type == "string" and length > 0) and (.os | type == "string" and length > 0) and
             .scene == $scene and .fixedTime == $fixedTime and .fixedStep == (1 / 120) and .drawablePixels == [1280, 800] and .renderScale == 1 and
-            .windowCount == 1 and .productionKernels == ["generateTerrain", "reduceOccupancy", "buildMixedOccupancy", "reduceMixedOccupancy", "clearVolumeLighting", "injectVolumeLighting", "raycastHybrid"] and .featureMask == $featureMask and
+            .windowCount == 1 and .productionKernels == ["generateTerrain", "reduceOccupancy", "buildMixedOccupancy", "reduceMixedOccupancy", "clearVolumeLighting", "injectVolumeLighting", "raycastHybrid"] and
+            ((.featureMask | split(",") | sort) == ($featureMask | split(",") | sort)) and
             .passCount == 2 and (.stepCounters | type == "object") and (.shadowSampleCounts | type == "object") and
             (.budgetOverflows | type == "number" and isfinite and . >= 0 and floor == .) and .commandErrors == 0 and .droppedDrawables == 0 and
             .semaphoreTimeouts == 0 and .capturePath == $capturePath
@@ -189,7 +198,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 for probe in shadow mixed budgets sdf optics volume motion ui; do
-    require_passing_status "$EVIDENCE_DIR/$probe.json"
+    validate_probe "$probe"
 done
 require_passing_status "$EVIDENCE_DIR/xctest.json"
 require_passing_status "$EVIDENCE_DIR/package-verification.json"

@@ -12,6 +12,18 @@ final class ShadowTraversalTests: XCTestCase {
         XCTAssertEqual(report.falseShadows, 0)
         XCTAssertEqual(report.missedShadows, 0)
         XCTAssertLessThanOrEqual(report.maxHitDistanceError, 0.002)
+        let data = try ProbeEnvelope.evaluated(
+            probe: "shadow",
+            device: try XCTUnwrap(MTLCreateSystemDefaultDevice()).name,
+            metrics: ShadowProbeMetrics(
+                sampleCount: report.sampleCount,
+                legacyMismatch: report.legacyMismatch,
+                falseShadows: report.falseShadows,
+                missedShadows: report.missedShadows,
+                maxHitDistanceError: Double(report.maxHitDistanceError)
+            )
+        ).encodedJSON()
+        try MetalProbeHarness.writeEvidence(data, named: "shadow")
     }
 
     func testOffRayVoxelInsideOccupiedMipCellDoesNotDarkenSurface() throws {

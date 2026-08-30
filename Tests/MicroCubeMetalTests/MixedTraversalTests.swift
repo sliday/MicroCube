@@ -16,7 +16,10 @@ final class MixedTraversalTests: XCTestCase {
             mixed: report.mixed,
             empty: report.empty
         )
-        let data = try ProbeEnvelope.evaluated(probe: "mixed", device: "test-device", metrics: metrics).encodedJSON()
+        let data = try ProbeEnvelope.evaluated(
+            probe: "mixed", device: try XCTUnwrap(MTLCreateSystemDefaultDevice()).name, metrics: metrics
+        ).encodedJSON()
+        try MetalProbeHarness.writeEvidence(data, named: "mixed")
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let encodedMetrics = try XCTUnwrap(object["metrics"] as? [String: Any])
 
@@ -60,6 +63,23 @@ final class MixedTraversalTests: XCTestCase {
         XCTAssertLessThanOrEqual(report.hierarchicalSteps, 4_096)
         XCTAssertLessThanOrEqual(report.sdfSamples, 24 * 2)
         XCTAssertEqual(report.budgetOverflows, 0)
+        let data = try ProbeEnvelope.evaluated(
+            probe: "budgets",
+            device: try XCTUnwrap(MTLCreateSystemDefaultDevice()).name,
+            metrics: BudgetProbeMetrics(
+                overflowCount: report.budgetOverflows,
+                smoothSteps: 24,
+                creatureSteps: 32,
+                fractalSteps: 48,
+                fractalIterations: 8,
+                hierarchicalSteps: 4_096,
+                surfaceLights: 4,
+                localShadowRays: 1,
+                sunShadowRays: 1,
+                secondarySceneRays: 1
+            )
+        ).encodedJSON()
+        try MetalProbeHarness.writeEvidence(data, named: "budgets")
     }
 
     func testOpticsOnlyKeepsGlassAndDisabledSDFRevealsVoxelBehindIt() throws {

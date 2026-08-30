@@ -234,6 +234,30 @@ final class QAModeTests: XCTestCase {
         XCTAssertEqual(String(decoding: data, as: UTF8.self).last, "\n")
     }
 
+    func testMetalProbeHarnessWritesNamedEvidenceFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let data = try ProbeEnvelope(
+            probe: "shadow",
+            device: "Apple M4 Max",
+            metrics: ShadowProbeMetrics(
+                sampleCount: 10_380,
+                legacyMismatch: 404,
+                falseShadows: 0,
+                missedShadows: 0,
+                maxHitDistanceError: 0.001
+            )
+        ).encodedJSON()
+
+        try MetalProbeHarness.writeEvidence(data, named: "shadow", directory: directory.path)
+
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("shadow.json")),
+            data
+        )
+    }
+
     func testProbeEnvelopeRejectsUnknownSchemaAndInconsistentStatus() throws {
         let unknownSchema = Data("""
         {"schemaVersion":2,"probe":"shadow","fixtureVersion":1,"status":"pass","failure":null,"device":"GPU","metrics":{"sampleCount":10380,"legacyMismatch":404,"falseShadows":0,"missedShadows":0,"maxHitDistanceError":0}}
@@ -475,6 +499,111 @@ final class ScriptContractTests: XCTestCase {
         let firstCapture = fixture.evidence.appendingPathComponent(captureSpecs[0].path)
         XCTAssertEqual(inputs["visual-review.json"], sha256(try Data(contentsOf: visualReview)))
         XCTAssertEqual(inputs[captureSpecs[0].path], sha256(try Data(contentsOf: firstCapture)))
+    }
+
+    func testCompletionVerifierAcceptsCanonicalFeatureOrderFromQAReport() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let spec = try XCTUnwrap(captureSpecs.first { $0.stem == "monsters-t0" })
+        let reportURL = fixture.evidence.appendingPathComponent(spec.reportPath)
+        var report = try json(at: reportURL)
+        report["featureMask"] = "shadows,lights,sdf,gaussian"
+        try writeJSON(report, to: reportURL)
+
+        let reviewURL = fixture.evidence.appendingPathComponent("visual-review.json")
+        var review = try json(at: reviewURL)
+        var rows = try XCTUnwrap(review["rows"] as? [[String: Any]])
+        let rowIndex = try XCTUnwrap(rows.firstIndex { $0["name"] as? String == spec.row })
+        var captures = try XCTUnwrap(rows[rowIndex]["captures"] as? [[String: Any]])
+        let captureIndex = try XCTUnwrap(captures.firstIndex { $0["reportPath"] as? String == spec.reportPath })
+        captures[captureIndex]["reportSHA256"] = sha256(try Data(contentsOf: reportURL))
+        rows[rowIndex]["captures"] = captures
+        review["rows"] = rows
+        try writeJSON(review, to: reviewURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertEqual(result.status, 0, result.output)
+    }
+
+    func testCompletionVerifierCanonicalizesEvidenceDirectoryBeforeMatchingCapturePath() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let aliasedEvidence = fixture.evidence.appendingPathComponent("../evidence").path
+
+        let result = try runScript("verify-completion.sh", arguments: [aliasedEvidence])
+
+        XCTAssertEqual(result.status, 0, result.output)
+    }
+
+    func testCompletionVerifierRejectsEmptyProbeMetrics() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let probeURL = fixture.evidence.appendingPathComponent("shadow.json")
+        var probe = try json(at: probeURL)
+        probe["metrics"] = [String: Any]()
+        try writeJSON(probe, to: probeURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("shadow.json is not valid probe evidence"), result.output)
+    }
+
+    func testCompletionVerifierRejectsWrongProbeSchema() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let probeURL = fixture.evidence.appendingPathComponent("shadow.json")
+        var probe = try json(at: probeURL)
+        probe["schemaVersion"] = 2
+        try writeJSON(probe, to: probeURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("shadow.json is not valid probe evidence"), result.output)
+    }
+
+    func testCompletionVerifierRejectsMismatchedProbeName() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let probeURL = fixture.evidence.appendingPathComponent("shadow.json")
+        var probe = try json(at: probeURL)
+        probe["probe"] = "mixed"
+        try writeJSON(probe, to: probeURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("shadow.json is not valid probe evidence"), result.output)
+    }
+
+    func testCompletionVerifierRejectsConcatenatedProbeObjects() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let probeURL = fixture.evidence.appendingPathComponent("shadow.json")
+        var data = Data("{\"status\":\"pass\"}\n".utf8)
+        data.append(try Data(contentsOf: probeURL))
+        try data.write(to: probeURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("shadow.json is not valid probe evidence"), result.output)
+    }
+
+    func testCompletionVerifierRejectsExtraProbeEnvelopeKey() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let probeURL = fixture.evidence.appendingPathComponent("shadow.json")
+        var probe = try json(at: probeURL)
+        probe["unreviewed"] = true
+        try writeJSON(probe, to: probeURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("shadow.json is not valid probe evidence"), result.output)
     }
 
     func testCompletionVerifierRejectsStaleCaptureHashAndInvalidBenchmarkSamples() throws {
@@ -1010,6 +1139,132 @@ final class ScriptContractTests: XCTestCase {
         )
     }
 
+    func testCaptureScriptAcceptsCanonicalFeatureOrderFromQAReport() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeFakeQAApp(in: fixture.root, canonicalFeatureOrder: true)
+
+        let result = try runScript(
+            "capture-qa.sh",
+            arguments: [app.path],
+            environment: [
+                "MICROCUBE_EVIDENCE_DIR": fixture.evidence.path,
+                "QA_REVIEWER": "Fixture Reviewer",
+                "QA_REVIEW_STATUS": "pass",
+            ]
+        )
+
+        XCTAssertEqual(result.status, 0, result.output)
+    }
+
+    func testCaptureScriptRejectsMissingFeatureSetMember() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeFakeQAApp(in: fixture.root, reportedFeatureMask: "shadows,lights,sdf")
+
+        let result = try runScript(
+            "capture-qa.sh",
+            arguments: [app.path],
+            environment: ["MICROCUBE_EVIDENCE_DIR": fixture.evidence.path]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+    }
+
+    func testProbeCaptureScriptWritesPassingXCTestSummary() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let runner = try makeFakeProbeRunner(in: fixture.root)
+
+        let result = try runScript(
+            "capture-probes.sh",
+            arguments: [fixture.evidence.path],
+            environment: ["MICROCUBE_TEST_RUNNER": runner.path]
+        )
+
+        XCTAssertEqual(result.status, 0, result.output)
+        let report = try json(at: fixture.evidence.appendingPathComponent("xctest.json"))
+        XCTAssertEqual(report["status"] as? String, "pass")
+        XCTAssertNil(report["failure"] as? String)
+    }
+
+    func testProbeCaptureScriptRejectsMissingCurrentProbeOutput() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let runner = try makeFakeProbeRunner(in: fixture.root, omitProbe: "ui")
+
+        let result = try runScript(
+            "capture-probes.sh",
+            arguments: [fixture.evidence.path],
+            environment: ["MICROCUBE_TEST_RUNNER": runner.path]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("Missing current probe evidence: ui.json"), result.output)
+    }
+
+    func testProbeCaptureScriptRejectsFailingProbeEnvelope() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let runner = try makeFakeProbeRunner(in: fixture.root, failingProbe: "ui")
+
+        let result = try runScript(
+            "capture-probes.sh",
+            arguments: [fixture.evidence.path],
+            environment: ["MICROCUBE_TEST_RUNNER": runner.path]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("Invalid current probe evidence: ui.json"), result.output)
+    }
+
+    func testProbeCaptureScriptRejectsEmptyProbeMetrics() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let runner = try makeFakeProbeRunner(in: fixture.root, emptyMetricsProbe: "shadow")
+
+        let result = try runScript(
+            "capture-probes.sh",
+            arguments: [fixture.evidence.path],
+            environment: ["MICROCUBE_TEST_RUNNER": runner.path]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("Invalid current probe evidence: shadow.json"), result.output)
+    }
+
+    func testProbeCaptureScriptRejectsConcatenatedProbeObjects() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let runner = try makeFakeProbeRunner(in: fixture.root, concatenatedProbe: "shadow")
+
+        let result = try runScript(
+            "capture-probes.sh",
+            arguments: [fixture.evidence.path],
+            environment: ["MICROCUBE_TEST_RUNNER": runner.path]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("Invalid current probe evidence: shadow.json"), result.output)
+    }
+
+    func testProbeCaptureScriptWritesFailingXCTestSummaryWhenRunnerFails() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let runner = try makeFakeProbeRunner(in: fixture.root, exitCode: 7)
+
+        let result = try runScript(
+            "capture-probes.sh",
+            arguments: [fixture.evidence.path],
+            environment: ["MICROCUBE_TEST_RUNNER": runner.path]
+        )
+
+        XCTAssertEqual(result.status, 7, result.output)
+        let report = try json(at: fixture.evidence.appendingPathComponent("xctest.json"))
+        XCTAssertEqual(report["status"] as? String, "fail")
+        XCTAssertEqual(report["failure"] as? String, "XCTest exited with code 7.")
+    }
+
     func testCaptureScriptRejectsStaleOutputWhenExecutableWritesNothing() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -1245,7 +1500,7 @@ final class ScriptContractTests: XCTestCase {
         try FileManager.default.createDirectory(at: captures, withIntermediateDirectories: true)
 
         for probe in ["shadow", "mixed", "budgets", "sdf", "optics", "volume", "motion", "ui"] {
-            try writeJSON(["status": "pass"], to: evidence.appendingPathComponent("\(probe).json"))
+            try writeJSON(validProbeEnvelope(probe), to: evidence.appendingPathComponent("\(probe).json"))
         }
         var entriesByRow = Dictionary(uniqueKeysWithValues: captureRows.map { ($0, [[String: Any]]()) })
         for spec in captureSpecs {
@@ -1300,8 +1555,91 @@ final class ScriptContractTests: XCTestCase {
         return (root, evidence, evidence.appendingPathComponent(captureSpecs[0].path))
     }
 
+    private func makeFakeProbeRunner(
+        in root: URL,
+        omitProbe: String? = nil,
+        failingProbe: String? = nil,
+        emptyMetricsProbe: String? = nil,
+        concatenatedProbe: String? = nil,
+        exitCode: Int = 0
+    ) throws -> URL {
+        let fixtures = root.appendingPathComponent("probe-fixtures-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtures, withIntermediateDirectories: true)
+        for probe in ["shadow", "mixed", "budgets", "sdf", "optics", "volume", "motion", "ui"] {
+            var envelope = validProbeEnvelope(probe)
+            if probe == failingProbe {
+                envelope["status"] = "fail"
+                envelope["failure"] = "fixture failure"
+            }
+            if probe == emptyMetricsProbe {
+                envelope["metrics"] = [String: Any]()
+            }
+            let fixtureURL = fixtures.appendingPathComponent("\(probe).json")
+            try writeJSON(envelope, to: fixtureURL)
+            if probe == concatenatedProbe {
+                var data = Data("{\"status\":\"pass\"}\n".utf8)
+                data.append(try Data(contentsOf: fixtureURL))
+                try data.write(to: fixtureURL)
+            }
+        }
+        let runner = root.appendingPathComponent("fake-probe-tests-\(UUID().uuidString)")
+        let script = #"""
+        #!/bin/zsh
+        if [ "\#(exitCode)" -ne 0 ]; then exit "\#(exitCode)"; fi
+        mkdir -p "$MICROCUBE_EVIDENCE_DIR"
+        for probe in shadow mixed budgets sdf optics volume motion ui; do
+            if [ "$probe" != "\#(omitProbe ?? "")" ]; then
+                cp "\#(fixtures.path)/$probe.json" "$MICROCUBE_EVIDENCE_DIR/$probe.json"
+            fi
+        done
+        """#
+        try writeExecutable(script, to: runner)
+        return runner
+    }
+
     private var productionKernels: [String] {
         ["generateTerrain", "reduceOccupancy", "buildMixedOccupancy", "reduceMixedOccupancy", "clearVolumeLighting", "injectVolumeLighting", "raycastHybrid"]
+    }
+
+    private func validProbeEnvelope(_ probe: String) -> [String: Any] {
+        let steps = ["voxelSteps": 1, "sdfSteps": 1, "gaussianSamples": 1]
+        let metrics: [String: Any]
+        switch probe {
+        case "shadow":
+            metrics = ["sampleCount": 10_380, "legacyMismatch": 404, "falseShadows": 0, "missedShadows": 0, "maxHitDistanceError": 0.001]
+        case "mixed":
+            metrics = [
+                "mixedLeafVoxel": true, "mixedLeafSDFRefs": 2, "wrongNearestHits": 0, "maxHitDistanceError": 0.001,
+                "voxelOnly": ["voxelSteps": 1, "sdfSteps": 0, "gaussianSamples": 0],
+                "sdfOnly": ["voxelSteps": 0, "sdfSteps": 1, "gaussianSamples": 0],
+                "gaussianOnly": ["voxelSteps": 0, "sdfSteps": 0, "gaussianSamples": 1],
+                "mixed": steps,
+                "empty": ["voxelSteps": 0, "sdfSteps": 0, "gaussianSamples": 0],
+            ]
+        case "budgets":
+            metrics = ["overflowCount": 0, "smoothSteps": 24, "creatureSteps": 32, "fractalSteps": 48, "fractalIterations": 8, "hierarchicalSteps": 4_096, "surfaceLights": 4, "localShadowRays": 1, "sunShadowRays": 1, "secondarySceneRays": 1]
+        case "sdf":
+            metrics = ["maxDistanceError": 0.0001, "maxNormalAngleDegrees": 0.5, "maxNormalLengthError": 0.001, "nonFiniteCount": 0, "negativeExteriorStepCount": 0, "fractalCoverage": 0.05]
+        case "optics":
+            metrics = ["maxReflectionDirectionError": 0.0001, "maxRefractionDirectionError": 0.0001, "tirFailureCount": 0, "recursiveSecondaryRayCount": 0]
+        case "volume":
+            metrics = ["maxHomogeneousRelativeError": 0.02, "maxGaussianRelativeError": 0.02, "maxSurfaceTransmittanceRelativeError": 0.02, "sunShadowRadianceRatio": 0.34, "localShadowRadianceRatio": 0.34, "smokeSunReceiverRatio": 0.99, "smokeLocalReceiverRatio": 0.99, "nonFiniteCount": 0]
+        case "motion":
+            metrics = ["creatureCount": 6, "lightCount": 6, "repeatMismatchCount": 0, "poseDeltaAtOneSecond": 0.1, "lightDeltaAtOneSecond": 0.1]
+        case "ui":
+            metrics = ["stateMismatchCount": 0, "focusFailureCount": 0, "modifierLeakCount": 0, "accessibilityFailureCount": 0, "responsiveLayoutFailureCount": 0, "adaptiveScaleFailureCount": 0, "fixedScaleFailureCount": 0, "reduceMotionFailureCount": 0, "windowCount": 1]
+        default:
+            metrics = [:]
+        }
+        return [
+            "schemaVersion": 1,
+            "probe": probe,
+            "fixtureVersion": 1,
+            "status": "pass",
+            "failure": NSNull(),
+            "device": "Apple M4 Max",
+            "metrics": metrics,
+        ]
     }
 
     private func qaReport(for spec: CaptureSpec, capturePath: String) -> [String: Any] {
@@ -1375,7 +1713,9 @@ final class ScriptContractTests: XCTestCase {
         in root: URL,
         skipFirstOutput: Bool = false,
         validKernels: Bool = true,
-        budgetOverflowsJSON: String = "6701"
+        budgetOverflowsJSON: String = "6701",
+        canonicalFeatureOrder: Bool = false,
+        reportedFeatureMask: String? = nil
     ) throws -> URL {
         let app = root.appendingPathComponent("Fixture.app", isDirectory: true)
         let executable = app.appendingPathComponent("Contents/MacOS/MicroCubeMetal")
@@ -1409,11 +1749,18 @@ final class ScriptContractTests: XCTestCase {
         if [ "\#(skipFirstOutput ? "1" : "0")" = 1 ] && [ "$count" = 1 ]; then
             exit 0
         fi
+        if [ "$features" = "sdf,lights,gaussian,shadows" ] && [ -n "\#(reportedFeatureMask ?? "")" ]; then
+            report_features="\#(reportedFeatureMask ?? "")"
+        elif [ "\#(canonicalFeatureOrder ? "1" : "0")" = 1 ] && [ "$features" = "sdf,lights,gaussian,shadows" ]; then
+            report_features="shadows,lights,sdf,gaussian"
+        else
+            report_features="$features"
+        fi
         mkdir -p "$(dirname "$capture")" "$(dirname "$report")"
         printf fixture > "$capture"
         width=${drawable%x*}
         height=${drawable#*x}
-        jq -n --arg scene "$scene" --arg featureMask "$features" --argjson fixedTime "$fixed_time" --argjson fixedStep "$fixed_step" --argjson drawablePixels "[$width, $height]" --arg capturePath "$capture" --argjson productionKernels '\#(kernelsJSON)' --argjson budgetOverflows '\#(budgetOverflowsJSON)' '{
+        jq -n --arg scene "$scene" --arg featureMask "$report_features" --argjson fixedTime "$fixed_time" --argjson fixedStep "$fixed_step" --argjson drawablePixels "[$width, $height]" --arg capturePath "$capture" --argjson productionKernels '\#(kernelsJSON)' --argjson budgetOverflows '\#(budgetOverflowsJSON)' '{
             schemaVersion: 1, status: "pass", failure: null, device: "Fixture GPU", os: "macOS Fixture",
             scene: $scene, fixedTime: $fixedTime, drawablePixels: $drawablePixels, renderScale: 1,
             windowCount: 1, productionKernels: $productionKernels,

@@ -35,7 +35,8 @@ capture() {
         .schemaVersion == 1 and .status == "pass" and .failure == null and
         (.device | type == "string" and length > 0) and (.os | type == "string" and length > 0) and
         .scene == $scene and .fixedTime == $fixedTime and .fixedStep == (1 / 120) and .drawablePixels == [1280, 800] and .renderScale == 1 and
-        .windowCount == 1 and .productionKernels == ["generateTerrain", "reduceOccupancy", "buildMixedOccupancy", "reduceMixedOccupancy", "clearVolumeLighting", "injectVolumeLighting", "raycastHybrid"] and .featureMask == $featureMask and
+        .windowCount == 1 and .productionKernels == ["generateTerrain", "reduceOccupancy", "buildMixedOccupancy", "reduceMixedOccupancy", "clearVolumeLighting", "injectVolumeLighting", "raycastHybrid"] and
+        ((.featureMask | split(",") | sort) == ($featureMask | split(",") | sort)) and
         .passCount == 2 and (.stepCounters | type == "object") and (.shadowSampleCounts | type == "object") and
         (.budgetOverflows | type == "number" and isfinite and . >= 0 and floor == .) and .commandErrors == 0 and .droppedDrawables == 0 and .semaphoreTimeouts == 0 and
         .capturePath == $png

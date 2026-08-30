@@ -67,6 +67,14 @@ The script selects `/Applications/Xcode.app` when the active command-line tools 
 
 ## Release evidence
 
+Run the release tests and write the eight measured probe envelopes:
+
+```sh
+./scripts/capture-probes.sh
+```
+
+The script removes stale probe files, runs the full release XCTest suite, validates each current envelope, and writes `dist/evidence/xctest.json`.
+
 Capture the eleven deterministic review rows from the packaged app:
 
 ```sh

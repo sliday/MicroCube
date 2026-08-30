@@ -1,4 +1,5 @@
 import AppKit
+import Metal
 import XCTest
 @testable import MicroCubeMetal
 
@@ -516,5 +517,73 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(hud.keyEquivalent, "")
         XCTAssertNil(RenderShortcut.action(keyCode: 34, modifiers: .command))
         XCTAssertNil(RenderShortcut.action(keyCode: 4, modifiers: .command))
+    }
+
+    func testUIProbeWritesMeasuredReleaseEvidence() throws {
+        func failure(_ condition: Bool) -> Int { condition ? 0 : 1 }
+
+        var state = RenderState()
+        state.apply(.evidence(.pyramid))
+        let stateMismatchCount = failure(
+            state.evidenceView == .pyramid && state.features == .all && !state.paused && state.hudVisible
+        )
+        let modifierLeakCount = failure(
+            RenderShortcut.action(keyCode: 34, modifiers: .command) == nil &&
+            RenderShortcut.action(keyCode: 4, modifiers: .control) == nil &&
+            RenderShortcut.action(keyCode: 7, modifiers: .option) == nil
+        )
+
+        var adaptive = RenderScaleController(scale: 0.70, mode: .adaptive)
+        adaptive.record(gpuMilliseconds: 12)
+        let adaptiveScaleFailureCount = failure(adaptive.scale < 0.70 && adaptive.scale >= 0.35)
+        var fixed = RenderScaleController(scale: 1.0, mode: .fixed)
+        for _ in 0..<900 { fixed.record(gpuMilliseconds: 30) }
+        let fixedScaleFailureCount = failure(fixed.scale == 1.0)
+        let reduceMotionFailureCount = failure(effectiveRenderState(RenderState(), reduceMotion: true).paused)
+
+        let delegate = AppDelegate()
+        delegate.configureWindow()
+        let window = try XCTUnwrap(delegate.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 1099, height: 700))
+        window.contentView?.layoutSubtreeIfNeeded()
+        delegate.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let panel = try XCTUnwrap(delegate.explainerPanel)
+        let rail = try XCTUnwrap(delegate.explainerRail)
+        let hud = try XCTUnwrap(delegate.hudOverlay)
+        let collapsedLayout = panel.isHidden && !rail.isHidden
+        rail.performClick(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let openFocus = window.firstResponder === panel.closeButton
+        let responsiveLayoutFailureCount = failure(
+            collapsedLayout && panel.frame.width >= 423.5 && panel.frame.width <= 424.5 &&
+            panel.frame.minX - hud.frame.maxX >= 15.5
+        )
+        panel.closeButton.performClick(nil)
+        let focusFailureCount = failure(openFocus && window.firstResponder === rail)
+        let accessibilityFailureCount = failure(
+            rail.accessibilityLabel() == "Open Why Rays explainer" &&
+            panel.closeButton.accessibilityLabel() == "Close Why Rays explainer" &&
+            panel.bodyTextFields.allSatisfy { ($0.font?.pointSize ?? 0) >= 13 } &&
+            panel.sourceLinkFields.count == 3
+        )
+        let metrics = UIProbeMetrics(
+            stateMismatchCount: stateMismatchCount,
+            focusFailureCount: focusFailureCount,
+            modifierLeakCount: modifierLeakCount,
+            accessibilityFailureCount: accessibilityFailureCount,
+            responsiveLayoutFailureCount: responsiveLayoutFailureCount,
+            adaptiveScaleFailureCount: adaptiveScaleFailureCount,
+            fixedScaleFailureCount: fixedScaleFailureCount,
+            reduceMotionFailureCount: reduceMotionFailureCount,
+            windowCount: 1
+        )
+        let data = try ProbeEnvelope.evaluated(
+            probe: "ui", device: try XCTUnwrap(MTLCreateSystemDefaultDevice()).name, metrics: metrics
+        ).encodedJSON()
+        try MetalProbeHarness.writeEvidence(data, named: "ui")
+
+        XCTAssertEqual(try ProbeEnvelope<UIProbeMetrics>.decodeValidated(data).status, "pass")
     }
 }

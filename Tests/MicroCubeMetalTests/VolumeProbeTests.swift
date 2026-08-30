@@ -39,11 +39,13 @@ final class VolumeProbeTests: XCTestCase {
             lightDeltaAtOneSecond: zip(first[4..<8], later[4..<8]).map { abs($0 - $1) }.reduce(0, +)
         )
         let volumeData = try ProbeEnvelope.evaluated(
-            probe: "volume", device: "test-device", metrics: volumeMetrics
+            probe: "volume", device: try XCTUnwrap(MTLCreateSystemDefaultDevice()).name, metrics: volumeMetrics
         ).encodedJSON()
         let motionData = try ProbeEnvelope.evaluated(
-            probe: "motion", device: "test-device", metrics: motionMetrics
+            probe: "motion", device: try XCTUnwrap(MTLCreateSystemDefaultDevice()).name, metrics: motionMetrics
         ).encodedJSON()
+        try MetalProbeHarness.writeEvidence(volumeData, named: "volume")
+        try MetalProbeHarness.writeEvidence(motionData, named: "motion")
         let volumeObject = try XCTUnwrap(JSONSerialization.jsonObject(with: volumeData) as? [String: Any])
         let encodedMetrics = try XCTUnwrap(volumeObject["metrics"] as? [String: Any])
 
