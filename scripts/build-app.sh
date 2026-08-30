@@ -9,8 +9,8 @@ EXECUTABLE_NAME="MicroCubeMetal"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 
-swift build --package-path "$PROJECT_DIR" -c release >&2
-BIN_DIR=$(swift build --package-path "$PROJECT_DIR" -c release --show-bin-path)
+swift build --package-path "$PROJECT_DIR" -c release --arch arm64 >&2
+BIN_DIR=$(swift build --package-path "$PROJECT_DIR" -c release --arch arm64 --show-bin-path)
 
 mkdir -p "$DIST_DIR"
 STAGING_DIR=$(mktemp -d "$DIST_DIR/.microcube-app.XXXXXX")

@@ -49,7 +49,7 @@ swift run -c release MicroCubeMetal
 ./scripts/build-app.sh
 ```
 
-The script creates `dist/MicroCube Metal.app`. It performs a release SwiftPM build for the host Mac, installs the `MicroCubeMetal` executable and SwiftPM resource bundles, writes the app metadata, and applies an ad hoc signature when `codesign` exists. Set `SKIP_CODESIGN=1` if you need an unsigned local bundle:
+The script creates `dist/MicroCube Metal.app`. It builds an arm64 release, installs the `MicroCubeMetal` executable and SwiftPM resource bundles, writes the app metadata, and applies an ad hoc signature when `codesign` exists. Set `SKIP_CODESIGN=1` if you need an unsigned local bundle:
 
 ```sh
 SKIP_CODESIGN=1 ./scripts/build-app.sh
@@ -62,6 +62,33 @@ SKIP_CODESIGN=1 ./scripts/build-app.sh
 ```
 
 The script selects `/Applications/Xcode.app` when the active command-line tools do not include XCTest. Pass SwiftPM test options after the script name. The tests cover input state, the uniform-buffer layout shared with Metal, exact voxel shadows, and 1-voxel terrain detail on the GPU.
+
+## Release evidence
+
+Capture the eleven deterministic review rows from the packaged app:
+
+```sh
+QA_REVIEWER="Your name" QA_REVIEW_STATUS=pass ./scripts/capture-qa.sh
+```
+
+The script writes PNGs, per-frame reports, and `dist/evidence/visual-review.json`. Set `QA_REVIEW_STATUS=pass` only after a human has reviewed every required state. The default result is `fail`, which blocks release completion.
+
+Run the M4 Max benchmark gate after thermal idle:
+
+```sh
+./scripts/benchmark.sh
+```
+
+It requires a device reported as `Apple M4 Max`, runs three 900-sample measurements at 1280×800 and 2560×1600 after 180 warmup frames, and writes six reports in `dist/evidence`. The worst p95 must stay at or below 8.33 ms and 16.67 ms respectively.
+
+Verify the packaged app, then verify the complete evidence set:
+
+```sh
+./scripts/verify-app.sh "dist/MicroCube Metal.app"
+./scripts/verify-completion.sh
+```
+
+`verify-app.sh` checks the arm64 bundle, signature, resources, kernels, Appendix B bytes, and a one-window QA launch. `verify-completion.sh` requires passing probe and release-XCTest reports, eleven approved hash-linked review rows, six valid benchmark reports, a hash-linked Metal trace review, and the package report. It writes `dist/evidence/completion.json`.
 
 ## Architecture
 

@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import XCTest
 @testable import MicroCubeMetal
@@ -391,5 +392,234 @@ final class QAModeTests: XCTestCase {
         XCTAssertGreaterThan(gaussian.gaussians.count, 0)
         XCTAssertEqual(fractal.sdfInstances.map(\.metadata.x), [3])
         XCTAssertTrue(fractal.gaussians.isEmpty)
+    }
+}
+
+final class ScriptContractTests: XCTestCase {
+    private let captureRows = [
+        "Shadow beauty and mismatch",
+        "Mixed primitive ID and steps",
+        "Monsters",
+        "Optics",
+        "Fog blocker",
+        "Gaussian",
+        "Smoke-cast surface shadow",
+        "Fractal normals",
+        "Hero final field",
+        "Five evidence views",
+        "Explainer responsive states",
+    ]
+
+    func testCompletionVerifierAcceptsValidEvidenceAndWritesHashLinkedReport() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertEqual(result.status, 0, result.output)
+        let report = try json(at: fixture.evidence.appendingPathComponent("completion.json"))
+        XCTAssertEqual(report["status"] as? String, "pass")
+        XCTAssertFalse((report["inputs"] as? [String: String] ?? [:]).isEmpty)
+    }
+
+    func testCompletionVerifierRejectsStaleCaptureHashAndInvalidBenchmarkSamples() throws {
+        let staleFixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: staleFixture.root) }
+        try Data("changed".utf8).write(to: staleFixture.capture)
+
+        let stale = try runScript("verify-completion.sh", arguments: [staleFixture.evidence.path])
+        XCTAssertNotEqual(stale.status, 0, stale.output)
+        XCTAssertEqual(
+            try json(at: staleFixture.evidence.appendingPathComponent("completion.json"))["status"] as? String,
+            "fail"
+        )
+
+        let benchmarkFixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: benchmarkFixture.root) }
+        let benchmark = benchmarkFixture.evidence.appendingPathComponent("benchmark-1280x800-run1.json")
+        var invalid = try json(at: benchmark)
+        invalid["gpuMilliseconds"] = Array(repeating: 1.0, count: 899)
+        try writeJSON(invalid, to: benchmark)
+
+        let invalidResult = try runScript("verify-completion.sh", arguments: [benchmarkFixture.evidence.path])
+        XCTAssertNotEqual(invalidResult.status, 0, invalidResult.output)
+
+        let windowFixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: windowFixture.root) }
+        try writeJSON(["status": "pass", "windowCount": 2], to: windowFixture.evidence.appendingPathComponent("package-verification.json"))
+
+        let windowResult = try runScript("verify-completion.sh", arguments: [windowFixture.evidence.path])
+        XCTAssertNotEqual(windowResult.status, 0, windowResult.output)
+    }
+
+    func testPackageVerifierRejectsMissingKernelAndWrongArchitecture() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = fixture.root.appendingPathComponent("MicroCube Metal.app", isDirectory: true)
+        let executable = app.appendingPathComponent("Contents/MacOS/MicroCubeMetal")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let resources = app.appendingPathComponent("Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        try Data("incomplete kernel source".utf8).write(to: resources.appendingPathComponent("MicroCube.metal"))
+
+        let result = try runScript("verify-app.sh", arguments: [app.path, fixture.root.appendingPathComponent("package.json").path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("not an arm64 executable"), result.output)
+        XCTAssertTrue(result.output.contains("Production kernel generateTerrain is missing"), result.output)
+        XCTAssertEqual(
+            try json(at: fixture.root.appendingPathComponent("package.json"))["status"] as? String,
+            "fail"
+        )
+    }
+
+    func testCaptureScriptWritesElevenApprovedRowsFromQAReports() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeFakeQAApp(in: fixture.root)
+
+        let result = try runScript(
+            "capture-qa.sh",
+            arguments: [app.path],
+            environment: [
+                "MICROCUBE_EVIDENCE_DIR": fixture.evidence.path,
+                "QA_REVIEWER": "Fixture Reviewer",
+                "QA_REVIEW_STATUS": "pass",
+            ]
+        )
+
+        XCTAssertEqual(result.status, 0, result.output)
+        let review = try json(at: fixture.evidence.appendingPathComponent("visual-review.json"))
+        XCTAssertEqual((review["rows"] as? [[String: Any]])?.count, 11)
+        XCTAssertEqual(review["status"] as? String, "pass")
+    }
+
+    private func makeFixture() throws -> (root: URL, evidence: URL, capture: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let evidence = root.appendingPathComponent("evidence", isDirectory: true)
+        let captures = evidence.appendingPathComponent("captures", isDirectory: true)
+        try FileManager.default.createDirectory(at: captures, withIntermediateDirectories: true)
+        let capture = captures.appendingPathComponent("capture.png")
+        try Data("fixture-png".utf8).write(to: capture)
+        let captureHash = sha256(try Data(contentsOf: capture))
+
+        for probe in ["shadow", "mixed", "budgets", "sdf", "optics", "volume", "motion", "ui"] {
+            try writeJSON(["status": "pass"], to: evidence.appendingPathComponent("\(probe).json"))
+        }
+        let visualRows: [[String: Any]] = captureRows.map { name in
+            [
+                "name": name,
+                "captures": [["path": "captures/capture.png", "sha256": captureHash]],
+                "reviewer": "Fixture Reviewer",
+                "reviewedAt": "2026-08-30T00:00:00Z",
+                "status": "pass",
+                "notes": "fixture",
+            ]
+        }
+        try writeJSON(["status": "pass", "rows": visualRows], to: evidence.appendingPathComponent("visual-review.json"))
+        for size in ["1280x800", "2560x1600"] {
+            for run in 1...3 {
+                try writeJSON(benchmarkReport(size: size), to: evidence.appendingPathComponent("benchmark-\(size)-run\(run).json"))
+            }
+        }
+        let trace = evidence.appendingPathComponent("trace.gputrace")
+        try Data("trace".utf8).write(to: trace)
+        try writeJSON([
+            "status": "pass",
+            "tracePath": "trace.gputrace",
+            "traceSHA256": sha256(try Data(contentsOf: trace)),
+            "steadyStatePassCount": 2,
+            "perFrameCPUTextureUploads": 0,
+            "steadyStateWaitUntilCompleted": 0,
+        ], to: evidence.appendingPathComponent("trace-review.json"))
+        try writeJSON(["status": "pass"], to: evidence.appendingPathComponent("xctest.json"))
+        try writeJSON(["status": "pass", "windowCount": 1], to: evidence.appendingPathComponent("package-verification.json"))
+        return (root, evidence, capture)
+    }
+
+    private func benchmarkReport(size: String) -> [String: Any] {
+        let pixels = size.split(separator: "x").compactMap { Int($0) }
+        return [
+            "schemaVersion": 1,
+            "status": "pass",
+            "device": "Apple M4 Max",
+            "thermalStateBefore": "nominal",
+            "thermalStateAfter": "nominal",
+            "drawablePixels": pixels,
+            "renderScale": 1.0,
+            "fixedStep": 1.0 / 120.0,
+            "warmupFrames": 180,
+            "measuredFrames": 900,
+            "percentileMethod": "nearest-rank",
+            "gpuMilliseconds": Array(repeating: 1.0, count: 900),
+            "p95GPUms": 1.0,
+            "commandErrors": 0,
+            "droppedDrawables": 0,
+            "semaphoreTimeouts": 0,
+            "passCount": 2,
+            "featureMask": "all",
+        ]
+    }
+
+    private func makeFakeQAApp(in root: URL) throws -> URL {
+        let app = root.appendingPathComponent("Fixture.app", isDirectory: true)
+        let executable = app.appendingPathComponent("Contents/MacOS/MicroCubeMetal")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let script = #"""
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --qa-capture) capture="$2"; shift 2 ;;
+                --qa-report) report="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        mkdir -p "$(dirname "$capture")" "$(dirname "$report")"
+        printf fixture > "$capture"
+        printf '{"schemaVersion":1,"status":"pass","failure":null,"windowCount":1,"passCount":2,"commandErrors":0,"droppedDrawables":0,"semaphoreTimeouts":0,"capturePath":"%s"}\n' "$capture" > "$report"
+        """#
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return app
+    }
+
+    private func runScript(
+        _ name: String,
+        arguments: [String],
+        environment: [String: String] = [:]
+    ) throws -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = [scriptURL(name).path] + arguments
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, value in value }
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+    }
+
+    private func scriptURL(_ name: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("scripts/\(name)")
+    }
+
+    private func writeJSON(_ object: Any, to url: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try data.write(to: url)
+    }
+
+    private func json(at url: URL) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    }
+
+    private func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
