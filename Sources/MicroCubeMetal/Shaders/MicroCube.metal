@@ -1,3 +1,13 @@
+constant uint FEATURE_SHADOWS = 1u << 0u;
+constant uint FEATURE_LIGHTS = 1u << 1u;
+constant uint FEATURE_OPTICS = 1u << 2u;
+constant uint FEATURE_SDF = 1u << 3u;
+constant uint FEATURE_GAUSSIAN = 1u << 4u;
+constant uint FEATURE_ALL = FEATURE_SHADOWS | FEATURE_LIGHTS | FEATURE_OPTICS | FEATURE_SDF | FEATURE_GAUSSIAN;
+constant uint EVIDENCE_VIEW_SHIFT = 8u;
+constant uint COUNTER_AGGREGATION = 1u << 16u;
+constant uint RENDER_OPTIONS_VALID = 1u << 31u;
+
 constant float3 kPalette[43] = {
     float3(0.000000f, 0.000000f, 0.000000f),
     float3(0.294118f, 0.345098f, 0.290196f),
@@ -214,11 +224,21 @@ kernel void injectVolumeLighting(
     device const Gaussian *gaussians [[buffer(6)]],
     device const Light *lights [[buffer(7)]],
     device const uint *activeVolumeCells [[buffer(9)]],
-    uint gid [[thread_position_in_grid]]) {
-    if (gid >= scene.grid.w) {
-        return;
+    device FrameCounters *frameCounters [[buffer(10)]],
+    uint gid [[thread_position_in_grid]],
+    uint simdLane [[thread_index_in_simdgroup]]) {
+    bool inRange = gid < scene.grid.w;
+    uint safeGID = min(gid, max(scene.grid.w, 1u) - 1u);
+    uint options = frame.viewportAndOptions.w;
+    if ((options & RENDER_OPTIONS_VALID) == 0u) {
+        options |= FEATURE_ALL;
     }
-    uint linearIndex = activeVolumeCells[gid];
+    bool shadowsEnabled = (options & FEATURE_SHADOWS) != 0u;
+    bool lightsEnabled = (options & FEATURE_LIGHTS) != 0u;
+    bool gaussianEnabled = (options & FEATURE_GAUSSIAN) != 0u;
+    uint volumeSunShadow = 0u;
+    uint volumeLocalShadow = 0u;
+    uint linearIndex = activeVolumeCells[safeGID];
     uint3 cell(
         linearIndex & 63u,
         (linearIndex >> 6u) & 63u,
@@ -226,18 +246,24 @@ kernel void injectVolumeLighting(
     );
     float3 point = (float3(cell) + 0.5f) * 8.0f;
     float3 sunDirection = normalize(frame.sunDirectionAndAmbient.xyz);
-    TraceHit shadowHit;
-    float sunVisibility = traceOcclusionExact(
-        voxels, point + sunDirection * 0.04f, sunDirection, 192.0f, shadowHit
-    ) ? 0.08f : 1.0f;
-    sunVisibility *= gaussianSceneTransmittance(
-        point, sunDirection, 0.05f, 192.0f, gaussians, scene.counts.y
-    );
+    float sunVisibility = 1.0f;
+    if (shadowsEnabled) {
+        TraceHit shadowHit;
+        sunVisibility = traceOcclusionExact(
+            voxels, point + sunDirection * 0.04f, sunDirection, 192.0f, shadowHit
+        ) ? 0.08f : 1.0f;
+        volumeSunShadow = 1u;
+    }
+    if (shadowsEnabled && gaussianEnabled) {
+        sunVisibility *= gaussianSceneTransmittance(
+            point, sunDirection, 0.05f, 192.0f, gaussians, scene.counts.y
+        );
+    }
     float3 radiance = float3(0.10f) + float3(1.0f, 0.93f, 0.78f) * sunVisibility * 0.72f;
 
     uint strongestIndex = 0u;
     float strongestScore = -1.0f;
-    for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
+    for (uint index = 0u; index < min(scene.counts.z, lightsEnabled ? 6u : 0u); ++index) {
         Light source = lights[index];
         Light light = animateLight(source, index, frame.cameraPositionAndTime.w);
         float3 delta = light.positionRadius.xyz - point;
@@ -248,7 +274,7 @@ kernel void injectVolumeLighting(
             strongestIndex = index;
         }
     }
-    for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
+    for (uint index = 0u; index < min(scene.counts.z, lightsEnabled ? 6u : 0u); ++index) {
         Light source = lights[index];
         Light light = animateLight(source, index, frame.cameraPositionAndTime.w);
         float3 delta = light.positionRadius.xyz - point;
@@ -257,21 +283,33 @@ kernel void injectVolumeLighting(
             continue;
         }
         float3 lightDirection = delta / distance;
-        float visibility = gaussianSceneTransmittance(
+        float visibility = shadowsEnabled && gaussianEnabled ? gaussianSceneTransmittance(
             point, lightDirection, 0.05f, distance, gaussians, scene.counts.y
-        );
-        if (index == strongestIndex) {
+        ) : 1.0f;
+        if (index == strongestIndex && shadowsEnabled) {
             TraceHit localShadow;
             if (traceOcclusionExact(voxels, point + lightDirection * 0.04f,
                                     lightDirection, distance - 0.08f, localShadow)) {
                 visibility *= 0.08f;
             }
+            volumeLocalShadow = 1u;
         }
         float falloff = 1.0f - distance / light.positionRadius.w;
         radiance += light.colorIntensity.xyz * light.colorIntensity.w
             * falloff * falloff * visibility * 0.16f;
     }
-    volumeLighting.write(half4(half3(radiance), half(sunVisibility)), cell);
+    if ((options & COUNTER_AGGREGATION) != 0u) {
+        uint sunSum = simd_sum(inRange && gaussianEnabled ? volumeSunShadow : 0u);
+        uint localSum = simd_sum(inRange && gaussianEnabled ? volumeLocalShadow : 0u);
+        if (simdLane == 0u) {
+            atomic_fetch_add_explicit(&frameCounters->volumeSunShadows, sunSum, memory_order_relaxed);
+            atomic_fetch_add_explicit(&frameCounters->volumeLocalShadows, localSum, memory_order_relaxed);
+        }
+    }
+    if (inRange) {
+        half3 outputRadiance = gaussianEnabled ? half3(radiance) : half3(0.0h);
+        volumeLighting.write(half4(outputRadiance, half(sunVisibility)), cell);
+    }
 }
 
 inline float3 shadeSecondaryHit(float3 point,
@@ -302,6 +340,37 @@ inline float3 shadeSecondaryHit(float3 point,
     return color;
 }
 
+inline void aggregateFrameCounters(thread const TraceCounts &counts,
+                                   uint secondaryRays,
+                                   uint surfaceSunShadows,
+                                   uint surfaceLocalShadows,
+                                   bool active,
+                                   device FrameCounters *frameCounters,
+                                   uint simdLane) {
+    uint macroSkips = simd_sum(active ? counts.hierarchicalSteps : 0u);
+    uint macroDescents = simd_sum(
+        active && (counts.voxelSteps + counts.sdfSamples + counts.gaussianSamples) != 0u ? 1u : 0u
+    );
+    uint voxelSteps = simd_sum(active ? counts.voxelSteps : 0u);
+    uint sdfSamples = simd_sum(active ? counts.sdfSamples : 0u);
+    uint gaussianSamples = simd_sum(active ? counts.gaussianSamples : 0u);
+    uint secondary = simd_sum(active ? secondaryRays : 0u);
+    uint sunShadows = simd_sum(active ? surfaceSunShadows : 0u);
+    uint localShadows = simd_sum(active ? surfaceLocalShadows : 0u);
+    uint overflows = simd_sum(active ? counts.budgetOverflows : 0u);
+    if (simdLane == 0u) {
+        atomic_fetch_add_explicit(&frameCounters->macroSkips, macroSkips, memory_order_relaxed);
+        atomic_fetch_add_explicit(&frameCounters->macroDescents, macroDescents, memory_order_relaxed);
+        atomic_fetch_add_explicit(&frameCounters->voxelSteps, voxelSteps, memory_order_relaxed);
+        atomic_fetch_add_explicit(&frameCounters->sdfSamples, sdfSamples, memory_order_relaxed);
+        atomic_fetch_add_explicit(&frameCounters->gaussianSamples, gaussianSamples, memory_order_relaxed);
+        atomic_fetch_add_explicit(&frameCounters->secondaryRays, secondary, memory_order_relaxed);
+        atomic_fetch_add_explicit(&frameCounters->surfaceSunShadows, sunShadows, memory_order_relaxed);
+        atomic_fetch_add_explicit(&frameCounters->surfaceLocalShadows, localShadows, memory_order_relaxed);
+        atomic_fetch_add_explicit(&frameCounters->budgetOverflows, overflows, memory_order_relaxed);
+    }
+}
+
 kernel void raycastHybrid(
     texture3d<uint, access::read> volume [[texture(0)]],
     texture3d<uint, access::read> mixed [[texture(1)]],
@@ -316,13 +385,27 @@ kernel void raycastHybrid(
     device const Gaussian *gaussians [[buffer(6)]],
     device const Light *lights [[buffer(7)]],
     device const Material *materials [[buffer(8)]],
-    uint2 gid [[thread_position_in_grid]]) {
+    device FrameCounters *frameCounters [[buffer(10)]],
+    uint2 gid [[thread_position_in_grid]],
+    uint simdLane [[thread_index_in_simdgroup]]) {
     uint2 viewport = uniforms.viewportAndOptions.xy;
-    if (any(gid >= viewport)) {
-        return;
+    bool active = all(gid < viewport);
+    uint2 pixelGID = min(gid, max(viewport, uint2(1u)) - 1u);
+    uint options = uniforms.viewportAndOptions.w;
+    if ((options & RENDER_OPTIONS_VALID) == 0u) {
+        options |= FEATURE_ALL;
     }
+    uint evidenceView = (options >> EVIDENCE_VIEW_SHIFT) & 0xffu;
+    bool shadowsEnabled = (options & FEATURE_SHADOWS) != 0u;
+    bool lightsEnabled = (options & FEATURE_LIGHTS) != 0u;
+    bool opticsEnabled = (options & FEATURE_OPTICS) != 0u;
+    bool sdfEnabled = (options & FEATURE_SDF) != 0u;
+    bool gaussianEnabled = (options & FEATURE_GAUSSIAN) != 0u;
+    uint secondaryRays = 0u;
+    uint surfaceSunShadows = 0u;
+    uint surfaceLocalShadows = 0u;
 
-    float2 pixel = float2(gid) + 0.5f;
+    float2 pixel = float2(pixelGID) + 0.5f;
     float horizontal = (2.0f * pixel.x / float(viewport.x) - 1.0f)
         * uniforms.cameraForwardAndFOV.w * uniforms.cameraRightAndAspect.w;
     float vertical = (1.0f - 2.0f * pixel.y / float(viewport.y)) * uniforms.cameraForwardAndFOV.w;
@@ -339,10 +422,13 @@ kernel void raycastHybrid(
         origin, direction, uniforms.cameraUpAndMaxDistance.w,
         uniforms.cameraPositionAndTime.w, hit, counts
     );
+    if (!sdfEnabled && hasHit && hit.primitiveKind != 0u) {
+        hasHit = false;
+    }
 
     if (hasHit) {
         float3 point = origin + direction * hit.t;
-        bool isGlass = hit.primitiveKind == 2u;
+        bool isGlass = opticsEnabled && hit.primitiveKind == 2u;
         float diffuse = max(0.0f, dot(hit.normal, sunDirection));
         float lighting = uniforms.sunDirectionAndAmbient.w
             + (1.0f - uniforms.sunDirectionAndAmbient.w) * diffuse;
@@ -351,8 +437,9 @@ kernel void raycastHybrid(
             lighting *= voxelAO(volume, point, hit.normal);
         }
 
-        if (!isGlass && diffuse > 0.0f) {
+        if (shadowsEnabled && !isGlass && diffuse > 0.0f) {
             TraceHit shadowHit;
+            surfaceSunShadows = 1u;
             if (traceOcclusionExact(volume, point + hit.normal * 0.035f, sunDirection, 100.0f, shadowHit)) {
                 lighting *= 0.45f;
             }
@@ -367,7 +454,9 @@ kernel void raycastHybrid(
             && materials[materialIndex].emissionMetalness.w > 0.0f;
         color = baseColor * lighting;
         uint selectedMask = 0u;
-        for (uint selection = 0u; selection < min(scene.counts.z, isGlass ? 0u : 4u); ++selection) {
+        for (uint selection = 0u;
+             selection < min(scene.counts.z, lightsEnabled && !isGlass ? 4u : 0u);
+             ++selection) {
             uint bestIndex = 0u;
             float bestScore = -1.0f;
             for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
@@ -389,12 +478,13 @@ kernel void raycastHybrid(
             if (distance >= light.positionRadius.w) continue;
             float3 lightDirection = delta / distance;
             float falloff = 1.0f - distance / light.positionRadius.w;
-            float visibility = gaussianSceneTransmittance(
+            float visibility = shadowsEnabled && gaussianEnabled ? gaussianSceneTransmittance(
                 point + hit.normal * 0.04f, lightDirection, 0.05f, distance,
                 gaussians, scene.counts.y
-            );
-            if (selection == 0u) {
+            ) : 1.0f;
+            if (selection == 0u && shadowsEnabled) {
                 TraceHit localShadow;
+                surfaceLocalShadows = 1u;
                 if (traceOcclusionExact(volume, point + hit.normal * 0.04f,
                                         lightDirection, distance - 0.08f, localShadow)) {
                     visibility *= 0.08f;
@@ -407,7 +497,7 @@ kernel void raycastHybrid(
         if (hit.primitiveKind != 0u) {
             color += materials[materialIndex].emissionMetalness.xyz;
         }
-        if (isGlass) {
+        if (isGlass && opticsEnabled) {
             OpticalPath path;
             OpticalRayBudget primaryOpticalBudget = {0u, 0u};
             Material material = materials[materialIndex];
@@ -426,6 +516,12 @@ kernel void raycastHybrid(
                         path.secondaryOrigin, path.exitDirection, uniforms.cameraUpAndMaxDistance.w,
                         uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts, secondaryOpticalBudget
                     );
+                    secondaryRays += 1u;
+                    counts.hierarchicalSteps += secondaryCounts.hierarchicalSteps;
+                    counts.voxelSteps += secondaryCounts.voxelSteps;
+                    counts.sdfSamples += secondaryCounts.sdfSamples;
+                    counts.gaussianSamples += secondaryCounts.gaussianSamples;
+                    counts.budgetOverflows += secondaryCounts.budgetOverflows;
                     float3 transmittedColor = skyColor(path.exitDirection, sunDirection);
                     if (secondaryFound) {
                         uint secondaryMaterial = secondaryHit.primitiveKind == 0u
@@ -449,7 +545,7 @@ kernel void raycastHybrid(
                                 skyColor(path.reflectionDirection, sunDirection), reflection);
                 }
             }
-        } else if (isReflective) {
+        } else if (isReflective && opticsEnabled) {
             float3 reflectionDirection = normalize(reflect(direction, hit.normal));
             HybridHit secondaryHit;
             TraceCounts secondaryCounts = {};
@@ -459,6 +555,12 @@ kernel void raycastHybrid(
                 point + hit.normal * 0.01f, reflectionDirection, uniforms.cameraUpAndMaxDistance.w,
                 uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts, secondaryOpticalBudget
             );
+            secondaryRays += 1u;
+            counts.hierarchicalSteps += secondaryCounts.hierarchicalSteps;
+            counts.voxelSteps += secondaryCounts.voxelSteps;
+            counts.sdfSamples += secondaryCounts.sdfSamples;
+            counts.gaussianSamples += secondaryCounts.gaussianSamples;
+            counts.budgetOverflows += secondaryCounts.budgetOverflows;
             float3 reflectionColor = skyColor(reflectionDirection, sunDirection);
             if (secondaryFound) {
                 uint secondaryMaterial = secondaryHit.primitiveKind == 0u
@@ -488,10 +590,11 @@ kernel void raycastHybrid(
     float volumeLimit = hasHit ? hit.t : uniforms.cameraUpAndMaxDistance.w;
     float transmittance = 1.0f;
     float3 scattering(0.0f);
-    for (uint index = 0u; index < min(scene.counts.y, 48u); ++index) {
+    for (uint index = 0u; index < min(scene.counts.y, gaussianEnabled ? 48u : 0u); ++index) {
         Gaussian gaussian = gaussians[index];
         float opticalDepth = gaussianOpticalDepth(origin, direction, 0.0f, volumeLimit, gaussian);
         if (opticalDepth <= 1.0e-5f) continue;
+        ++counts.gaussianSamples;
         float segmentTransmittance = exp(-min(opticalDepth, 20.0f));
         int3 cell = int3(clamp(floor(gaussian.localCenterSigma.xyz / 8.0f), float3(0.0f), float3(63.0f)));
         float3 incident = float3(volumeLighting.read(uint3(cell)).xyz);
@@ -501,6 +604,70 @@ kernel void raycastHybrid(
     }
     color = color * transmittance + scattering;
 
+    float sampleDistance = hasHit ? hit.t : min(64.0f, uniforms.cameraUpAndMaxDistance.w);
+    float3 samplePoint = clamp(origin + direction * sampleDistance, float3(0.0f), float3(511.999f));
+    if (evidenceView == 1u) {
+        uint flags = mixed.read(uint3(samplePoint / 8.0f), 0u).x;
+        float3 gridColor(0.025f, 0.035f, 0.05f);
+        float channels = 1.0f;
+        if ((flags & 1u) != 0u) { gridColor += float3(0.20f, 0.85f, 0.35f); channels += 1.0f; }
+        if ((flags & 2u) != 0u) { gridColor += float3(0.95f, 0.25f, 0.70f); channels += 1.0f; }
+        if ((flags & 4u) != 0u) { gridColor += float3(0.15f, 0.75f, 1.00f); channels += 1.0f; }
+        if ((flags & 8u) != 0u) { gridColor += float3(1.00f, 0.72f, 0.12f); channels += 1.0f; }
+        if ((flags & 16u) != 0u) { gridColor += float3(0.95f, 0.18f, 0.15f); channels += 1.0f; }
+        color = gridColor / channels;
+    } else if (evidenceView == 2u) {
+        uint3 mixedCell = uint3(samplePoint / 8.0f);
+        uint3 voxelCell = uint3(samplePoint);
+        float3 mixedLevels(0.0f);
+        float3 voxelLevels(0.0f);
+        float mixedWeight = 0.0f;
+        float voxelWeight = 0.0f;
+        for (uint level = 0u; level <= 6u; ++level) {
+            if (mixed.read(mixedCell >> level, level).x != 0u) {
+                float t = float(level) / 6.0f;
+                mixedLevels += float3(1.0f - t, 0.25f + 0.55f * t, t);
+                mixedWeight += 1.0f;
+            }
+        }
+        for (uint level = 0u; level <= 9u; ++level) {
+            if (volume.read(voxelCell >> level, level).x != 0u) {
+                float t = float(level) / 9.0f;
+                voxelLevels += float3(0.10f + 0.25f * t, 1.0f - t * 0.55f, 0.35f + 0.65f * t);
+                voxelWeight += 1.0f;
+            }
+        }
+        mixedLevels /= max(mixedWeight, 1.0f);
+        voxelLevels /= max(voxelWeight, 1.0f);
+        color = mixedWeight > 0.0f
+            ? mix(mixedLevels, voxelLevels, voxelWeight > 0.0f ? 0.45f : 0.0f)
+            : float3(0.025f, 0.035f, 0.05f);
+    } else if (evidenceView == 3u) {
+        color = float3(
+            saturate(float(counts.hierarchicalSteps) / 96.0f),
+            saturate(float(counts.voxelSteps + counts.sdfSamples) / 64.0f),
+            saturate(float(counts.gaussianSamples + secondaryRays * 8u
+                + surfaceSunShadows * 4u + surfaceLocalShadows * 4u) / 32.0f)
+        );
+    } else if (evidenceView == 4u) {
+        float totalWork = float(
+            counts.hierarchicalSteps + counts.voxelSteps + counts.sdfSamples
+            + counts.gaussianSamples + secondaryRays * 16u
+            + surfaceSunShadows * 8u + surfaceLocalShadows * 8u
+        );
+        float heat = saturate(log2(1.0f + totalWork) / 11.0f);
+        color = float3(heat, heat * heat, (1.0f - heat) * 0.85f);
+    }
+
+    if ((options & COUNTER_AGGREGATION) != 0u) {
+        aggregateFrameCounters(
+            counts, secondaryRays, surfaceSunShadows, surfaceLocalShadows,
+            active, frameCounters, simdLane
+        );
+    }
+    if (!active) {
+        return;
+    }
     color = pow(saturate(color * uniforms.fogAndExposure.z), float3(1.0f / 2.2f));
     output.write(float4(color, 1.0f), gid);
 }

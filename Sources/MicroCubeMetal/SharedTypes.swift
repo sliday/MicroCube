@@ -84,6 +84,164 @@ enum EvidenceView: UInt32, CaseIterable {
     case pyramid
     case steps
     case cost
+
+    var title: String {
+        switch self {
+        case .final: "FINAL FIELD"
+        case .grid: "GRID"
+        case .pyramid: "PYRAMID"
+        case .steps: "RAY STEPS"
+        case .cost: "COST"
+        }
+    }
+}
+
+enum RenderAction: Equatable {
+    case evidence(EvidenceView)
+    case toggleFeature(RenderFeatures)
+    case togglePause
+    case toggleHUD
+    case toggleExplainer
+    case toggleFullscreen
+    case reset
+    case escape
+}
+
+struct RenderState: Equatable {
+    var evidenceView: EvidenceView = .final
+    var features: RenderFeatures = .all
+    var paused = false
+    var hudVisible = true
+    var explainerVisible = false
+
+    var counterAggregationEnabled: Bool {
+        evidenceView == .steps || evidenceView == .cost
+    }
+
+    @discardableResult
+    mutating func apply(_ action: RenderAction) -> Bool {
+        switch action {
+        case .evidence(let view):
+            evidenceView = view
+        case .toggleFeature(let feature):
+            features.formSymmetricDifference(feature)
+        case .togglePause:
+            paused.toggle()
+        case .toggleHUD:
+            hudVisible.toggle()
+        case .toggleExplainer:
+            explainerVisible.toggle()
+        case .escape:
+            guard explainerVisible else { return false }
+            explainerVisible = false
+            return true
+        case .toggleFullscreen, .reset:
+            break
+        }
+        return false
+    }
+}
+
+enum RenderScaleMode {
+    case adaptive
+    case fixed
+}
+
+struct RenderScaleController {
+    private(set) var scale: Double
+    let mode: RenderScaleMode
+
+    init(scale: Double, mode: RenderScaleMode) {
+        self.scale = min(1.0, max(0.35, scale))
+        self.mode = mode
+    }
+
+    mutating func record(gpuMilliseconds: Double) {
+        guard mode == .adaptive, gpuMilliseconds.isFinite, gpuMilliseconds > 0.0 else { return }
+        let correction = sqrt(8.0 / gpuMilliseconds)
+        scale = min(1.0, max(0.35, scale * min(1.05, max(0.90, correction))))
+    }
+}
+
+struct RenderShortcutModifiers: OptionSet {
+    let rawValue: UInt8
+
+    static let command = Self(rawValue: 1 << 0)
+    static let control = Self(rawValue: 1 << 1)
+    static let option = Self(rawValue: 1 << 2)
+    static let shift = Self(rawValue: 1 << 3)
+}
+
+enum RenderShortcut {
+    static func action(
+        keyCode: UInt16,
+        modifiers: RenderShortcutModifiers = []
+    ) -> RenderAction? {
+        guard modifiers.intersection([.command, .control, .option]).isEmpty else { return nil }
+        return switch keyCode {
+        case 18: .evidence(.final)
+        case 19: .evidence(.grid)
+        case 20: .evidence(.pyramid)
+        case 21: .evidence(.steps)
+        case 23: .evidence(.cost)
+        case 5: .toggleFeature(.gaussian)
+        case 40: .toggleFeature(.shadows)
+        case 37: .toggleFeature(.lights)
+        case 31: .toggleFeature(.optics)
+        case 7: .toggleFeature(.sdf)
+        case 35: .togglePause
+        case 34: .toggleExplainer
+        case 4: .toggleHUD
+        case 3: .toggleFullscreen
+        case 15: .reset
+        case 53: .escape
+        default: nil
+        }
+    }
+}
+
+struct HUDState {
+    var renderState: RenderState
+    var framesPerSecond: Double
+    var gpuMilliseconds: Double
+    var drawableWidth: Int
+    var drawableHeight: Int
+    var renderScale: Double
+    var counters: FrameCounters?
+
+    var text: String {
+        let ordinal = Int(renderState.evidenceView.rawValue) + 1
+        let lineOne = String(
+            format: "SCENE %d/5 · %@ · 2 COMPUTE PASSES · %.0f FPS · %.2f MS GPU · %d×%d",
+            ordinal,
+            renderState.evidenceView.title,
+            framesPerSecond,
+            gpuMilliseconds,
+            drawableWidth,
+            drawableHeight
+        )
+        let enabled = [
+            renderState.features.contains(.shadows) ? "SHADOWS" : nil,
+            renderState.features.contains(.lights) ? "LIGHTS" : nil,
+            renderState.features.contains(.optics) ? "OPTICS" : nil,
+            renderState.features.contains(.sdf) ? "SDF" : nil,
+            renderState.features.contains(.gaussian) ? "GAUSSIAN" : nil,
+        ].compactMap { $0 }.joined(separator: "/")
+        let featuresText = enabled.isEmpty ? "FEATURES OFF" : "\(enabled) ON"
+        var lines = [
+            lineOne,
+            "MIXED 64³ MIP 6→0 · VOXELS 512³ MIP 9→0 · VOXEL DDA + SDF RM + GAUSSIAN",
+            String(format: "%.0f%% SCALE · %@", renderScale * 100.0, featuresText),
+        ]
+        if let counters {
+            lines.append(
+                "MACRO SKIPS \(counters.macroSkips) · DESCENTS \(counters.macroDescents) · " +
+                "VOXEL STEPS \(counters.voxelSteps) · SDF \(counters.sdfSamples) · " +
+                "GAUSSIAN \(counters.gaussianSamples) · SECONDARY \(counters.secondaryRays)"
+            )
+        }
+        return lines.joined(separator: "\n")
+    }
 }
 
 struct InputSnapshot {

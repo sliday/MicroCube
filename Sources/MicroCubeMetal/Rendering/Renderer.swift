@@ -110,6 +110,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let volumeLightingPipeline: MTLComputePipelineState
     private let raycastPipeline: MTLComputePipelineState
     private let raycastThreadgroupSize: MTLSize
+    private let counterBuffers: [MTLBuffer]
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
     private let stateLock = NSLock()
 
@@ -118,8 +119,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var yaw = Renderer.initialYaw
     private var pitch = Renderer.initialPitch
     private var resetPending = false
+    private var renderState = RenderState()
     private var frameIndex: UInt32 = 0
-    private var renderScale: CGFloat = 0.70
+    private var scaleController = RenderScaleController(scale: 0.70, mode: .adaptive)
+    private var sceneTime = 0.0
+    private var latestCounters: FrameCounters?
+    private var counterSlotsInUse = [false, false, false]
     private var drawableSizeDirty = true
     private var lastFrameTime = CACurrentMediaTime()
     private var lastHUDTime = 0.0
@@ -129,7 +134,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     init?(metalView: MTKView, input: InputState, hudUpdate: @escaping (String) -> Void) {
         guard let device = metalView.device ?? MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue(),
-              MemoryLayout<FrameUniforms>.stride == 112 else {
+              MemoryLayout<FrameUniforms>.stride == 112,
+              MemoryLayout<FrameCounters>.stride == 48 else {
             return nil
         }
 
@@ -172,6 +178,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         } catch {
             return nil
         }
+        let counterBuffers = (0..<3).compactMap { _ in
+            device.makeBuffer(length: MemoryLayout<FrameCounters>.stride, options: .storageModeShared)
+        }
+        guard counterBuffers.count == 3 else {
+            return nil
+        }
 
         self.input = input
         self.hudUpdate = hudUpdate
@@ -186,6 +198,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.volumeLightingPipeline = volumeLightingPipeline
         self.raycastPipeline = raycastPipeline
         self.raycastThreadgroupSize = Renderer.make2DThreadgroupSize(for: raycastPipeline)
+        self.counterBuffers = counterBuffers
         self.metalView = metalView
         super.init()
 
@@ -208,6 +221,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
     }
 
+    func setRenderState(_ state: RenderState) {
+        stateLock.lock()
+        renderState = state
+        if !state.counterAggregationEnabled {
+            latestCounters = nil
+        }
+        stateLock.unlock()
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         drawableSizeDirty = true
     }
@@ -216,6 +238,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         let now = CACurrentMediaTime()
         let deltaTime = min(0.05, max(0.0, now - lastFrameTime))
         lastFrameTime = now
+        let state = currentRenderState()
+        if !state.paused {
+            sceneTime += deltaTime
+        }
         updateCamera(deltaTime: Float(deltaTime))
         updateFrameRate(deltaTime: deltaTime)
         adjustRenderScaleIfNeeded()
@@ -233,12 +259,21 @@ final class Renderer: NSObject, MTKViewDelegate {
             return
         }
 
+        let counterSlot = Int(frameIndex % 3)
+        guard prepareCounterSlot(counterSlot) else {
+            inFlightSemaphore.signal()
+            return
+        }
+        let counterBuffer = counterBuffers[counterSlot]
+        let aggregatesCounters = state.counterAggregationEnabled
+
         let width = drawable.texture.width
         let height = drawable.texture.height
-        var uniforms = makeUniforms(width: width, height: height, time: now)
+        var uniforms = makeUniforms(width: width, height: height, time: sceneTime, state: state)
         var sceneUniforms = makeSceneUniforms()
 
         guard let volumeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            releaseCounterSlot(counterSlot)
             inFlightSemaphore.signal()
             return
         }
@@ -251,17 +286,23 @@ final class Renderer: NSObject, MTKViewDelegate {
         volumeEncoder.setBuffer(sceneResources.gaussians, offset: 0, index: 6)
         volumeEncoder.setBuffer(sceneResources.lights, offset: 0, index: 7)
         volumeEncoder.setBuffer(sceneResources.activeVolumeCells, offset: 0, index: 9)
+        volumeEncoder.setBuffer(counterBuffer, offset: 0, index: 10)
         let volumeThreadWidth = min(
             volumeLightingPipeline.threadExecutionWidth,
             volumeLightingPipeline.maxTotalThreadsPerThreadgroup
         )
-        volumeEncoder.dispatchThreads(
-            MTLSize(width: sceneResources.scene.activeVolumeCells.count, height: 1, depth: 1),
+        volumeEncoder.dispatchThreadgroups(
+            MTLSize(
+                width: (sceneResources.scene.activeVolumeCells.count + volumeThreadWidth - 1) / volumeThreadWidth,
+                height: 1,
+                depth: 1
+            ),
             threadsPerThreadgroup: MTLSize(width: volumeThreadWidth, height: 1, depth: 1)
         )
         volumeEncoder.endEncoding()
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            releaseCounterSlot(counterSlot)
             inFlightSemaphore.signal()
             return
         }
@@ -280,8 +321,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setBuffer(sceneResources.gaussians, offset: 0, index: 6)
         encoder.setBuffer(sceneResources.lights, offset: 0, index: 7)
         encoder.setBuffer(sceneResources.materials, offset: 0, index: 8)
-        encoder.dispatchThreads(
-            MTLSize(width: width, height: height, depth: 1),
+        encoder.setBuffer(counterBuffer, offset: 0, index: 10)
+        encoder.dispatchThreadgroups(
+            MTLSize(
+                width: (width + raycastThreadgroupSize.width - 1) / raycastThreadgroupSize.width,
+                height: (height + raycastThreadgroupSize.height - 1) / raycastThreadgroupSize.height,
+                depth: 1
+            ),
             threadsPerThreadgroup: raycastThreadgroupSize
         )
         encoder.endEncoding()
@@ -293,12 +339,13 @@ final class Renderer: NSObject, MTKViewDelegate {
             if completedBuffer.gpuEndTime > completedBuffer.gpuStartTime {
                 self?.recordGPUTime((completedBuffer.gpuEndTime - completedBuffer.gpuStartTime) * 1_000.0)
             }
+            self?.completeCounterSlot(counterSlot, aggregationEnabled: aggregatesCounters)
             semaphore.signal()
         }
         commandBuffer.commit()
 
         frameIndex &+= 1
-        updateHUDIfNeeded(now: now, width: width, height: height)
+        updateHUDIfNeeded(now: now, width: width, height: height, state: state)
     }
 
     private static func makeLibrary(device: MTLDevice) throws -> MTLLibrary {
@@ -441,6 +488,41 @@ final class Renderer: NSObject, MTKViewDelegate {
         return commandBuffer.status == .completed
     }
 
+    private func currentRenderState() -> RenderState {
+        stateLock.lock()
+        let state = renderState
+        stateLock.unlock()
+        return state
+    }
+
+    private func prepareCounterSlot(_ slot: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !counterSlotsInUse[slot] else { return false }
+        counterSlotsInUse[slot] = true
+        counterBuffers[slot].contents().initializeMemory(
+            as: UInt8.self,
+            repeating: 0,
+            count: MemoryLayout<FrameCounters>.stride
+        )
+        return true
+    }
+
+    private func releaseCounterSlot(_ slot: Int) {
+        stateLock.lock()
+        counterSlotsInUse[slot] = false
+        stateLock.unlock()
+    }
+
+    private func completeCounterSlot(_ slot: Int, aggregationEnabled: Bool) {
+        let counters = counterBuffers[slot].contents()
+            .assumingMemoryBound(to: FrameCounters.self).pointee
+        stateLock.lock()
+        latestCounters = aggregationEnabled ? counters : nil
+        counterSlotsInUse[slot] = false
+        stateLock.unlock()
+    }
+
     private func updateCamera(deltaTime: Float) {
         stateLock.lock()
         let shouldReset = resetPending
@@ -482,7 +564,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         )
     }
 
-    private func makeUniforms(width: Int, height: Int, time: CFTimeInterval) -> FrameUniforms {
+    private func makeUniforms(
+        width: Int,
+        height: Int,
+        time: CFTimeInterval,
+        state: RenderState
+    ) -> FrameUniforms {
         let cosPitch = cos(pitch)
         let sinPitch = sin(pitch)
         let cosYaw = cos(yaw)
@@ -494,14 +581,18 @@ final class Renderer: NSObject, MTKViewDelegate {
         let aspect = Float(width) / Float(max(1, height))
         let halfFOV = tan(Float(70.0 * .pi / 360.0))
 
+        var options = state.features.rawValue | (state.evidenceView.rawValue << 8) | (1 << 31)
+        if state.counterAggregationEnabled {
+            options |= 1 << 16
+        }
         return FrameUniforms(
             cameraPositionAndTime: SIMD4<Float>(cameraPosition.x, cameraPosition.y, cameraPosition.z, Float(time.truncatingRemainder(dividingBy: 4_096.0))),
             cameraForwardAndFOV: SIMD4<Float>(forward.x, forward.y, forward.z, halfFOV),
             cameraRightAndAspect: SIMD4<Float>(right.x, right.y, right.z, aspect),
             cameraUpAndMaxDistance: SIMD4<Float>(up.x, up.y, up.z, 256.0),
             sunDirectionAndAmbient: SIMD4<Float>(sun.x, sun.y, sun.z, 0.42),
-            viewportAndOptions: SIMD4<UInt32>(UInt32(width), UInt32(height), frameIndex, 0b111),
-            fogAndExposure: SIMD4<Float>(0.83, 1.0, 1.0, Float(renderScale))
+            viewportAndOptions: SIMD4<UInt32>(UInt32(width), UInt32(height), frameIndex, options),
+            fogAndExposure: SIMD4<Float>(0.83, 1.0, 1.0, Float(scaleController.scale))
         )
     }
 
@@ -541,18 +632,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
         guard gpuTime > 0.0 else { return }
 
-        let targetMilliseconds = 14.5
-        let correction = CGFloat(sqrt(targetMilliseconds / gpuTime))
-        let boundedCorrection = min(1.05, max(0.90, correction))
-        let newScale = min(1.0, max(0.35, renderScale * boundedCorrection))
-        if abs(newScale - renderScale) >= 0.01 {
-            renderScale = newScale
+        let oldScale = scaleController.scale
+        scaleController.record(gpuMilliseconds: gpuTime)
+        if abs(scaleController.scale - oldScale) >= 0.01 {
             drawableSizeDirty = true
         }
     }
 
     private func updateDrawableSize(_ view: MTKView) {
         let backingBounds = view.convertToBacking(view.bounds)
+        let renderScale = CGFloat(scaleController.scale)
         let desiredSize = CGSize(
             width: max(1.0, floor(backingBounds.width * renderScale)),
             height: max(1.0, floor(backingBounds.height * renderScale))
@@ -566,22 +655,26 @@ final class Renderer: NSObject, MTKViewDelegate {
         view.drawableSize = desiredSize
     }
 
-    private func updateHUDIfNeeded(now: CFTimeInterval, width: Int, height: Int) {
+    private func updateHUDIfNeeded(
+        now: CFTimeInterval,
+        width: Int,
+        height: Int,
+        state: RenderState
+    ) {
         guard now - lastHUDTime >= 0.25 else { return }
         lastHUDTime = now
         stateLock.lock()
         let gpuTime = smoothedGPUTimeMS
+        let counters = latestCounters
         stateLock.unlock()
-        let rays = Int64(width) * Int64(height)
-        let text = String(
-            format: "%.0f FPS  |  %.2f ms GPU  |  %dx%d  |  %lld rays  |  %.0f%% scale",
-            smoothedFPS,
-            gpuTime,
-            width,
-            height,
-            rays,
-            Double(renderScale * 100.0)
-        )
-        hudUpdate(text)
+        hudUpdate(HUDState(
+            renderState: state,
+            framesPerSecond: smoothedFPS,
+            gpuMilliseconds: gpuTime,
+            drawableWidth: width,
+            drawableHeight: height,
+            renderScale: scaleController.scale,
+            counters: state.counterAggregationEnabled ? counters : nil
+        ).text)
     }
 }

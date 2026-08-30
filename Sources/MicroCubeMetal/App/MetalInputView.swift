@@ -7,21 +7,17 @@ final class MetalInputView: MTKView {
         static let a: UInt16 = 0
         static let s: UInt16 = 1
         static let d: UInt16 = 2
-        static let f: UInt16 = 3
         static let q: UInt16 = 12
         static let w: UInt16 = 13
         static let e: UInt16 = 14
-        static let r: UInt16 = 15
         static let returnKey: UInt16 = 36
         static let space: UInt16 = 49
-        static let escape: UInt16 = 53
 
         static let movement = [w, s, a, d, q, e]
     }
 
     let input: InputState
-    var onToggleFullscreen: (() -> Void)?
-    var onReset: (() -> Void)?
+    var onRenderAction: ((RenderAction) -> Bool)?
     var onCaptureChanged: ((Bool) -> Void)?
 
     private(set) var isMouseCaptured = false
@@ -86,22 +82,13 @@ final class MetalInputView: MTKView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if handleRendererShortcut(event) {
+            return
+        }
         switch event.keyCode {
         case KeyCode.returnKey, KeyCode.space:
             if !isMouseCaptured && !event.isARepeat {
                 captureMouse()
-            }
-        case KeyCode.escape:
-            if !event.isARepeat {
-                releaseMouse()
-            }
-        case KeyCode.f:
-            if !event.isARepeat {
-                onToggleFullscreen?()
-            }
-        case KeyCode.r:
-            if !event.isARepeat {
-                onReset?()
             }
         case KeyCode.w, KeyCode.s, KeyCode.a, KeyCode.d, KeyCode.q, KeyCode.e:
             input.setKey(event.keyCode, down: true)
@@ -121,6 +108,21 @@ final class MetalInputView: MTKView {
 
     override func flagsChanged(with event: NSEvent) {
         input.setSpeedBoost(event.modifierFlags.contains(.shift))
+    }
+
+    func handleRendererShortcut(_ event: NSEvent) -> Bool {
+        guard !event.isARepeat,
+              let action = RenderShortcut.action(
+                keyCode: event.keyCode,
+                modifiers: RenderShortcutModifiers(event.modifierFlags)
+              ) else {
+            return false
+        }
+        let handled = onRenderAction?(action) ?? false
+        if action == .escape && !handled {
+            releaseMouse()
+        }
+        return true
     }
 
     func captureMouse() {
@@ -163,5 +165,16 @@ final class MetalInputView: MTKView {
     deinit {
         NotificationCenter.default.removeObserver(self)
         releaseMouse()
+    }
+}
+
+private extension RenderShortcutModifiers {
+    init(_ flags: NSEvent.ModifierFlags) {
+        var modifiers: RenderShortcutModifiers = []
+        if flags.contains(.command) { modifiers.insert(.command) }
+        if flags.contains(.control) { modifiers.insert(.control) }
+        if flags.contains(.option) { modifiers.insert(.option) }
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        self = modifiers
     }
 }

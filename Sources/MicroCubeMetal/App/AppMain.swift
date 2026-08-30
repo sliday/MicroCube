@@ -8,14 +8,36 @@ private final class PassthroughVisualEffectView: NSVisualEffectView {
     }
 }
 
+private final class RendererShortcutWindow: NSWindow {
+    var onKeyDown: ((NSEvent) -> Bool)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, onKeyDown?(event) == true {
+            return
+        }
+        super.sendEvent(event)
+    }
+}
+
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let input = InputState()
+    private(set) var renderState = RenderState()
     private var window: NSWindow?
     private var metalView: MetalInputView?
     private var renderer: Renderer?
+    private weak var hudOverlay: NSView?
     private weak var hudLabel: NSTextField?
     private weak var legendLabel: NSTextField?
+    private(set) var hudTrailingAnchor: NSLayoutXAxisAnchor?
+    var onHUDTrailingAnchorReady: ((NSLayoutXAxisAnchor) -> Void)? {
+        didSet {
+            if let hudTrailingAnchor {
+                onHUDTrailingAnchorReady?(hudTrailingAnchor)
+            }
+        }
+    }
+    var onRenderStateChanged: ((RenderState) -> Void)?
 
     static func main() {
         let application = NSApplication.shared
@@ -61,6 +83,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         fullscreenItem.keyEquivalentModifierMask = [.control, .command]
         fullscreenItem.target = self
+        viewMenu.addItem(.separator())
+        let explainerItem = viewMenu.addItem(
+            withTitle: "Why Rays Explainer",
+            action: #selector(toggleExplainer(_:)),
+            keyEquivalent: "i"
+        )
+        explainerItem.keyEquivalentModifierMask = [.command]
+        explainerItem.target = self
+        let hudItem = viewMenu.addItem(
+            withTitle: "Toggle HUD",
+            action: #selector(toggleHUD(_:)),
+            keyEquivalent: "h"
+        )
+        hudItem.keyEquivalentModifierMask = [.command]
+        hudItem.target = self
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 
@@ -69,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureWindow() {
         let contentRect = NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let window = NSWindow(
+        let window = RendererShortcutWindow(
             contentRect: contentRect,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -108,8 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         metalView.setAccessibilityHelp(
             "Click or press Return or Space to capture the mouse. Press Escape to release it. Use W, S, A, D, Q, and E to move."
         )
-        metalView.onToggleFullscreen = { [weak window] in
-            window?.toggleFullScreen(nil)
+        metalView.onRenderAction = { [weak self] action in
+            self?.handleRenderAction(action) ?? false
+        }
+        window.onKeyDown = { [weak metalView] event in
+            metalView?.handleRendererShortcut(event) ?? false
         }
         container.addSubview(metalView)
         self.metalView = metalView
@@ -140,9 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.renderer = renderer
         metalView.delegate = renderer
-        metalView.onReset = { [weak renderer] in
-            renderer?.resetCamera()
-        }
+        renderer.setRenderState(renderState)
 
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(metalView)
@@ -157,11 +195,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.wantsLayer = true
         overlay.layer?.cornerRadius = 9
         overlay.layer?.masksToBounds = true
+        self.hudOverlay = overlay
 
         let hudLabel = NSTextField(labelWithString: "Starting Metal renderer...")
         hudLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
         hudLabel.textColor = .white
-        hudLabel.lineBreakMode = .byTruncatingTail
+        hudLabel.maximumNumberOfLines = 4
+        hudLabel.lineBreakMode = .byWordWrapping
         hudLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         self.hudLabel = hudLabel
 
@@ -194,6 +234,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stack.topAnchor.constraint(equalTo: overlay.topAnchor, constant: 9),
             stack.bottomAnchor.constraint(equalTo: overlay.bottomAnchor, constant: -9)
         ])
+        hudTrailingAnchor = overlay.trailingAnchor
+        onHUDTrailingAnchorReady?(overlay.trailingAnchor)
     }
 
     private func installMetalUnavailableLabel(in container: NSView) {
@@ -226,10 +268,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func captureLegend(captured: Bool) -> String {
         let state = captured ? "MOUSE CAPTURED · ESC TO RELEASE" : "CLICK TO LOOK · RETURN/SPACE"
-        return "\(state)   W/S/A/D  Move   Q/E  Vertical   SHIFT  Boost   F  Fullscreen   R  Reset"
+        return "\(state)   1–5  Views   G/K/L/O/X  Features   P  Pause   I  Explain   H  HUD   F  Fullscreen   R  Reset"
+    }
+
+    @discardableResult
+    private func handleRenderAction(_ action: RenderAction) -> Bool {
+        let consumed = renderState.apply(action)
+        switch action {
+        case .toggleFullscreen:
+            window?.toggleFullScreen(nil)
+        case .reset:
+            renderer?.resetCamera()
+        case .toggleHUD:
+            hudOverlay?.isHidden = !renderState.hudVisible
+        case .toggleExplainer:
+            if renderState.explainerVisible {
+                metalView?.releaseMouse()
+            } else if let metalView {
+                window?.makeFirstResponder(metalView)
+            }
+        default:
+            break
+        }
+        renderer?.setRenderState(renderState)
+        onRenderStateChanged?(renderState)
+        return consumed
     }
 
     @objc private func toggleFullScreen(_ sender: Any?) {
         window?.toggleFullScreen(sender)
+    }
+
+    @objc private func toggleExplainer(_ sender: Any?) {
+        handleRenderAction(.toggleExplainer)
+    }
+
+    @objc private func toggleHUD(_ sender: Any?) {
+        handleRenderAction(.toggleHUD)
     }
 }
