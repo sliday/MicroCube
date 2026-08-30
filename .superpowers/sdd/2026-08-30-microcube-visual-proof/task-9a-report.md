@@ -323,3 +323,95 @@ The benchmark records 5,978 runtime budget overflows. This counter remains a per
 ## Final status
 
 DONE: the architecture correction restores all six required creature IDs at both animation times, keeps the anchor-scaled authored composition, passes the release suite and benchmark gate, and supplies final-view plus primitive-ID evidence.
+
+## Fix round 3 diagnosis before test edits
+
+Round 3 keeps the reset camera, terrain, renderer, QA lifecycle, and traversal correction unchanged. `SceneData.makeHero()` still authors the scene through literal base centers, applies `heroPresentationScale = 1.5` around `heroAnchor = (288, 102, 302)`, derives creature lights from the resulting creature centers, and builds the production cell references.
+
+The reset camera uses position `(240.75, 117, 233.75)`, yaw `0.6`, pitch `-0.18`, vertical tangent `0.7002075382`, and aspect `1.6`. Exact projection and the round-2 primitive-ID captures exposed two source/test discrepancies with the visual gate:
+
+1. Stable ID 5 used base X/Z `(275, 310)`, which scales to `(268.5, 314)`. Its projected center was `(490.61, 489.57)` at depth `85.69`. At time 0, its `4x18+482+416` primitive box and 47 pixels sat inside stable ID 2's `43x209+477+372` box. The existing literal fixture accepted this overlap.
+2. The fractal used base center `(299, 98, 321)`, which scales to `(304.5, 96, 330.5)`. Its projected center was `(630.23, 399.61)` at depth `117.74`. Its `92x63+578+347` primitive box overlapped stable ID 3's `32x62+580+344` box and stable ID 6's `25x86+556+346` box. The existing literal center and bounds accepted the merged magenta patch.
+
+The single production candidate uses these independent literals:
+
+- Stable ID 5 base X/Z `(270, 315)`, scaled X/Z `(261, 321.5)`, production terrain height `88`, and center Y `98.44`. Its projected center is about `(421, 419)` at depth `85.8`, left of stable ID 2.
+- Fractal base center `(270, 118, 340)`, scaled center `(261, 126, 359)`, and scaled swept bounds `(250.5, 108, 348.5)` through `(271.5, 144, 369.5)`. Its projected center is `(362.90, 249.11)` at depth `111.34`. A conservative `108x108` projected envelope covers about 1.14% of the drawable and sits opposite the upper-right slab.
+
+## Fix round 3 RED and GREEN
+
+Before production edits, the literal fixture changed only stable ID 5's scaled X/Z, the fractal center/bounds, and the expected production terrain height.
+
+```sh
+./scripts/test.sh --filter 'SceneDataTests/testHero'
+```
+
+RED: 6 tests ran with 8 expected failures. Two failures reported stable ID 5 at `(268.5, 314)` instead of `(261, 321.5)`. Five failures reported the old fractal center and bounds. The production GPU terrain probe reported `78` instead of `88`. The production visibility probe remained green, which isolated the failures to the new composition fixtures.
+
+The production edit changed only stable ID 5's base center to `(270, 98.44, 315)` and the fractal base center/bounds to `(270, 118, 340)` plus or minus `(7, 12, 7)`. The creature light still derives its X/Y/Z from the creature center.
+
+GREEN: the same focused command ran 6 tests with 0 failures. The GPU terrain probe confirmed height `88`, all six lights remained attached, and every SDF bound stayed inside the 512-unit world.
+
+## Fix round 3 capture evidence
+
+`./scripts/build-app.sh` completed before the one permitted production capture attempt. Four release-app invocations used the fixed 1280 by 800 reset camera, all features, render scale 1, fixed step 1/120, and final or primitive-ID view.
+
+| Time | View | PNG | SHA-256 | Runtime overflows |
+| --- | --- | --- | --- | ---: |
+| 0 | final | `/tmp/microcube-task9a-round3-final-t0.png` | `51c57e7c843e863b82b89af5c56864388fe9d3b2bc13a0afbbbe647f592d2909` | 8,799 |
+| 1 | final | `/tmp/microcube-task9a-round3-final-t1.png` | `db6c4e7d522789a88367fefdb2562ea33cace7c9ed07654f624dcfc9d191d0e6` | 8,817 |
+| 0 | primitive-ID | `/tmp/microcube-task9a-round3-primitive-t0.png` | `788c78b871860987799c4035dce5efeca46407ce6a75adc29855e94f2379967e` | 8,799 |
+| 1 | primitive-ID | `/tmp/microcube-task9a-round3-primitive-t1.png` | `a51e5d0173be19aa6f8d3b65fa56cb17628ab0823e3ca87d2db0cc2be30eadde` | 8,817 |
+
+All four JSON reports record `status=pass`, one window, two passes, all features, zero command errors, zero dropped drawables, and zero semaphore timeouts.
+
+Eight-connected component analysis of exact primitive-ID colors produced one component for each creature at each time:
+
+| Time | Stable ID | Pixels | Bounding box | Components |
+| --- | ---: | ---: | --- | ---: |
+| 0 | 2 | 6,146 | `43x209+477+372` | 1 |
+| 0 | 3 | 1,368 | `32x62+580+344` | 1 |
+| 0 | 4 | 3,412 | `32x159+733+307` | 1 |
+| 0 | 5 | 3,075 | `34x146+411+340` | 1 |
+| 0 | 6 | 1,360 | `25x86+556+346` | 1 |
+| 0 | 7 | 2,355 | `26x134+677+255` | 1 |
+| 1 | 2 | 6,049 | `44x209+492+369` | 1 |
+| 1 | 3 | 1,281 | `31x57+587+345` | 1 |
+| 1 | 4 | 3,495 | `32x160+733+306` | 1 |
+| 1 | 5 | 3,128 | `34x147+401+341` | 1 |
+| 1 | 6 | 1,511 | `25x97+550+346` | 1 |
+| 1 | 7 | 2,360 | `26x134+675+255` | 1 |
+
+Every creature exceeds the 500-pixel gate. Visual inspection of both final views shows six separated silhouettes. The fractal has 7,365 pixels and a `124x118+298+189` full box at both times. Its largest connected component has 5,906 pixels and box `108x103+314+194`; it does not overlap any creature, sculpture, or glass box. The fractal's exact pixel area is 0.72% of the drawable. It balances the upper-left while leaving the upper-right slab visible.
+
+### Actual before/after pixel spans
+
+The image-path comparison used `/tmp/microcube-before-voxels.png` as the pre-scale baseline and `/tmp/microcube-task9a-round3-final-t1.png` as the round-3 result. Both files are fixed 1280 by 800 final-view captures.
+
+- Hero span method: scan vertical column `x=618` through the stable glass form and record the first and last outer-surface pixels. Both captures span `y=255...356`, or 102 pixels inclusive. The measured ratio is `102 / 102 = 1.0`, a 0% height change.
+- Terrain-cell method: inspect six consecutive high-contrast terrain face edges in the matched-depth `420x300+430+360` crops next to the hero. Antialiasing and material changes bound the baseline faces at 9 to 10 pixels and the round-3 faces at 6 to 7 pixels. The repeated-edge comparison reads 65% to 70%, centered at 67%. The source crop paths are `/tmp/microcube-baseline-terrain-crop.png` and `/tmp/microcube-round3-terrain-crop.png`.
+
+The actual pixels therefore support the 67% terrain projection target and the within-10% hero-height target. The earlier distance equations remain supporting geometry rather than the sole evidence.
+
+## Fix round 3 regressions
+
+Fresh results after capture:
+
+- Focused hero tests: 6 passed.
+- `ShadowTraversalTests`: 2 passed.
+- `MixedTraversalTests`: 7 passed.
+- `VolumeProbeTests`: 4 passed.
+- Full release suite: 95 passed with 0 failures.
+- Release app build: passed.
+
+## Fix round 3 benchmark and status
+
+The single permitted fixed 1280 by 800 benchmark used time 1, final view, 20 warmup frames, and 60 measured frames. No retry occurred.
+
+- Report: `/tmp/microcube-task9a-round3-benchmark.json`
+- p95: `6.065000023227185 ms`
+- Gate: `5.997293750988319 ms`
+- Miss: `0.067706272238866 ms`, or 1.13% above the gate.
+- Runtime: `status=pass`, nominal thermal state before and after, one window, two passes, zero command errors, zero dropped drawables, zero semaphore timeouts, and 8,809 budget overflows.
+
+BLOCKED: the production placement passes the visual, component, pixel-span, build, and regression gates, but its only allowed acceptance benchmark exceeds the p95 limit. Runtime budget overflows also increased from the round-2 architecture captures' 5,818 to 5,964 range to 8,799 to 8,817. The no-retry rule prevents a passing acceptance benchmark for this round.

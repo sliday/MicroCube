@@ -39,7 +39,7 @@ final class SceneDataTests: XCTestCase {
             SIMD2<Float>(261, 287),
             SIMD2<Float>(277.5, 299),
             SIMD2<Float>(295.5, 290),
-            SIMD2<Float>(268.5, 314),
+            SIMD2<Float>(261, 321.5),
             SIMD2<Float>(286.5, 323),
             SIMD2<Float>(304.5, 311)
         ]
@@ -80,7 +80,7 @@ final class SceneDataTests: XCTestCase {
         let scale: Float = 1.5
         let expectedSDFs: [(UInt32, SIMD3<Float>, Float, SIMD3<Float>, SIMD3<Float>)] = [
             (0, SIMD3<Float>(277.5, 96, 288.5), 10.5, SIMD3<Float>(267, 81, 278), SIMD3<Float>(288, 111, 299)),
-            (3, SIMD3<Float>(304.5, 96, 330.5), 10.5, SIMD3<Float>(294, 78, 320), SIMD3<Float>(315, 114, 341)),
+            (3, SIMD3<Float>(261, 126, 359), 10.5, SIMD3<Float>(250.5, 108, 348.5), SIMD3<Float>(271.5, 144, 369.5)),
             (4, SIMD3<Float>(286.5, 115.5, 306.5), 7.5, SIMD3<Float>(279, 108, 299), SIMD3<Float>(294, 123, 314))
         ]
         let originalCamera = SIMD3<Float>(256.5, 112, 256.5)
@@ -166,7 +166,7 @@ final class SceneDataTests: XCTestCase {
             library: library,
             device: device
         )
-        let expectedTerrainHeights: [Float] = [87, 88, 93, 78, 86, 101]
+        let expectedTerrainHeights: [Float] = [87, 88, 93, 88, 86, 101]
         let positions = creatures.map { SIMD2<Float>($0.positionScale.x, $0.positionScale.z) }
         let positionBuffer = try positions.withUnsafeBytes { bytes in
             try XCTUnwrap(device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared))
