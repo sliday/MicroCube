@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import MicroCubeMetal
 
@@ -117,5 +118,78 @@ final class UIStateTests: XCTestCase {
         ))
         XCTAssertFalse(hud.text.contains("VOXEL STEPS"))
         XCTAssertTrue(hud.text.contains("70% SCALE"))
+    }
+
+    func testHUDUsesViewSpecificInvestigationLegends() {
+        let legends: [(EvidenceView, String)] = [
+            (.final, "HYBRID FIELD · SURFACE + VOLUME"),
+            (.grid, "CELL FLAGS · VOXEL GREEN · SDF MAGENTA · VOLUME CYAN · LIGHT AMBER · FRACTAL RED"),
+            (.pyramid, "COARSE → FINE · MIXED 6→0 · VOXELS 9→0"),
+            (.steps, "R MACRO · G SOLID/SDF · B VOLUME/RAYS"),
+            (.cost, "COOL LIGHT WORK · HOT HEAVY WORK"),
+        ]
+
+        for (view, legend) in legends {
+            var state = RenderState()
+            state.apply(.evidence(view))
+            let hud = HUDState(
+                renderState: state,
+                framesPerSecond: 60,
+                gpuMilliseconds: 8,
+                drawableWidth: 896,
+                drawableHeight: 560,
+                renderScale: 0.70,
+                counters: nil
+            )
+
+            XCTAssertTrue(hud.text.contains(legend), "Missing legend for \(view)")
+        }
+    }
+
+    func testPausedHUDPersistsCameraLiveStatus() {
+        var state = RenderState()
+        state.apply(.togglePause)
+        let hud = HUDState(
+            renderState: state,
+            framesPerSecond: 60,
+            gpuMilliseconds: 8,
+            drawableWidth: 896,
+            drawableHeight: 560,
+            renderScale: 0.70,
+            counters: nil
+        )
+
+        XCTAssertTrue(hud.text.contains("MOTION HELD · CAMERA LIVE"))
+    }
+
+    func testPauseTransitionsUseInjectableAccessibilityAnnouncements() {
+        let delegate = AppDelegate()
+        var announcements = [String]()
+        delegate.accessibilityAnnouncementHandler = { announcements.append($0) }
+
+        delegate.handleRenderAction(.togglePause)
+        delegate.handleRenderAction(.togglePause)
+
+        XCTAssertEqual(announcements, [
+            "Scene motion paused. Camera remains active.",
+            "Scene motion resumed.",
+        ])
+    }
+
+    func testViewMenuCommandsHaveNoModifiedKeyEquivalentFallback() throws {
+        let application = NSApplication.shared
+        let previousMenu = application.mainMenu
+        defer { application.mainMenu = previousMenu }
+        let delegate = AppDelegate()
+
+        delegate.configureMenu()
+
+        let viewMenu = try XCTUnwrap(application.mainMenu?.items.first { $0.submenu?.title == "View" }?.submenu)
+        let explainer = try XCTUnwrap(viewMenu.item(withTitle: "Why Rays Explainer"))
+        let hud = try XCTUnwrap(viewMenu.item(withTitle: "Toggle HUD"))
+        XCTAssertEqual(explainer.keyEquivalent, "")
+        XCTAssertEqual(hud.keyEquivalent, "")
+        XCTAssertNil(RenderShortcut.action(keyCode: 34, modifiers: .command))
+        XCTAssertNil(RenderShortcut.action(keyCode: 4, modifiers: .command))
     }
 }

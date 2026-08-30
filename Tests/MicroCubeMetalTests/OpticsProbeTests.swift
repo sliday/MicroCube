@@ -33,6 +33,13 @@ final class OpticsProbeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(report.tirSecondaryOriginDistance, 1.0001)
     }
 
+    func testLightsOffRemovesCreatureLightsFromSecondaryShading() throws {
+        let report = try runOpticsProbe()
+
+        XCTAssertGreaterThan(report.secondaryWithLights, report.secondaryWithoutLights)
+        XCTAssertEqual(report.secondaryWithoutLights, sqrt(3), accuracy: 0.0001)
+    }
+
     private func runOpticsProbe() throws -> Report {
         let source = """
         kernel void probeOptics(
@@ -109,12 +116,30 @@ final class OpticsProbeTests: XCTestCase {
                 ? float(secondaryShadeBudget.recursiveSecondaryRayCount) : NAN;
             output[14] = float(instrumentedSceneBudget.recursiveSecondaryRayCount);
             output[15] = float(rayDepthAfterShading);
+            OpticalRayBudget enabledLightBudget = {0u, 0u};
+            OpticalRayBudget disabledLightBudget = {0u, 0u};
+            float3 withLights = shadeSecondaryHit(
+                float3(0.0f), float3(0.0f, 1.0f, 0.0f), float3(1.0f),
+                float3(0.0f, 1.0f, 0.0f), 0.42f, true,
+                lights, scene, 0.0f, enabledLightBudget
+            );
+            float3 withoutLights = shadeSecondaryHit(
+                float3(0.0f), float3(0.0f, 1.0f, 0.0f), float3(1.0f),
+                float3(0.0f, 1.0f, 0.0f), 0.42f, false,
+                lights, scene, 0.0f, disabledLightBudget
+            );
+            output[16] = length(withLights);
+            output[17] = length(withoutLights);
         }
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
         let pipeline = try MetalProbeHarness.makePipeline(name: "probeOptics", library: library, device: device)
-        let output = try XCTUnwrap(device.makeBuffer(length: 16 * MemoryLayout<Float>.stride, options: .storageModeShared))
-        let lights = try XCTUnwrap(device.makeBuffer(length: MemoryLayout<Light>.stride, options: .storageModeShared))
+        let output = try XCTUnwrap(device.makeBuffer(length: 18 * MemoryLayout<Float>.stride, options: .storageModeShared))
+        var light = Light(
+            positionRadius: SIMD4<Float>(0, 10, 0, 20),
+            colorIntensity: SIMD4<Float>(1, 0.3, 0.1, 10)
+        )
+        let lights = try XCTUnwrap(device.makeBuffer(bytes: &light, length: MemoryLayout<Light>.stride))
         let scratch = try XCTUnwrap(device.makeBuffer(length: 256, options: .storageModeShared))
         let textureDescriptor = MTLTextureDescriptor()
         textureDescriptor.textureType = .type3D
@@ -126,7 +151,12 @@ final class OpticsProbeTests: XCTestCase {
         textureDescriptor.usage = .shaderRead
         let voxels = try XCTUnwrap(device.makeTexture(descriptor: textureDescriptor))
         let mixed = try XCTUnwrap(device.makeTexture(descriptor: textureDescriptor))
-        var scene = SceneUniforms(counts: .zero, grid: .zero, fog: .zero, budgets: .zero)
+        var scene = SceneUniforms(
+            counts: SIMD4<UInt32>(0, 0, 1, 0),
+            grid: .zero,
+            fog: .zero,
+            budgets: .zero
+        )
         let queue = try XCTUnwrap(device.makeCommandQueue())
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
         let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
@@ -147,7 +177,7 @@ final class OpticsProbeTests: XCTestCase {
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
 
-        let values = output.contents().bindMemory(to: Float.self, capacity: 16)
+        let values = output.contents().bindMemory(to: Float.self, capacity: 18)
         let direction = SIMD3<Float>(1, 0, 0)
         let entryNormal = SIMD3<Float>(-sqrt(1 - 0.25 * 0.25), 0.25, 0)
         let expectedEntry = refract(direction, normal: entryNormal, eta: 1 / 1.5)
@@ -168,7 +198,9 @@ final class OpticsProbeTests: XCTestCase {
             tirSecondaryOriginDistance: values[12],
             instrumentedSecondaryLaunchCount: Int(values[13]),
             instrumentedSecondarySceneLaunchCount: Int(values[14]),
-            secondaryShadeRayDepth: Int(values[15])
+            secondaryShadeRayDepth: Int(values[15]),
+            secondaryWithLights: values[16],
+            secondaryWithoutLights: values[17]
         )
     }
 
@@ -192,5 +224,7 @@ final class OpticsProbeTests: XCTestCase {
         let instrumentedSecondaryLaunchCount: Int
         let instrumentedSecondarySceneLaunchCount: Int
         let secondaryShadeRayDepth: Int
+        let secondaryWithLights: Float
+        let secondaryWithoutLights: Float
     }
 }

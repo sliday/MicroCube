@@ -317,6 +317,7 @@ inline float3 shadeSecondaryHit(float3 point,
                                 float3 baseColor,
                                 float3 sunDirection,
                                 float ambient,
+                                bool lightsEnabled,
                                 device const Light *lights,
                                 constant SceneUniforms &scene,
                                 float time,
@@ -324,7 +325,7 @@ inline float3 shadeSecondaryHit(float3 point,
     float3 color = shadeSecondaryLighting(
         point, normal, baseColor, sunDirection, ambient, secondaryOpticalBudget
     );
-    for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
+    for (uint index = 0u; index < min(scene.counts.z, lightsEnabled ? 6u : 0u); ++index) {
         Light source = lights[index];
         Light light = animateLight(source, index, time);
         float3 delta = light.positionRadius.xyz - point;
@@ -340,6 +341,21 @@ inline float3 shadeSecondaryHit(float3 point,
     return color;
 }
 
+inline float3 shadeSecondaryHit(float3 point,
+                                float3 normal,
+                                float3 baseColor,
+                                float3 sunDirection,
+                                float ambient,
+                                device const Light *lights,
+                                constant SceneUniforms &scene,
+                                float time,
+                                thread OpticalRayBudget &secondaryOpticalBudget) {
+    return shadeSecondaryHit(
+        point, normal, baseColor, sunDirection, ambient, true, lights, scene,
+        time, secondaryOpticalBudget
+    );
+}
+
 inline void aggregateFrameCounters(thread const TraceCounts &counts,
                                    uint secondaryRays,
                                    uint surfaceSunShadows,
@@ -347,10 +363,8 @@ inline void aggregateFrameCounters(thread const TraceCounts &counts,
                                    bool active,
                                    device FrameCounters *frameCounters,
                                    uint simdLane) {
-    uint macroSkips = simd_sum(active ? counts.hierarchicalSteps : 0u);
-    uint macroDescents = simd_sum(
-        active && (counts.voxelSteps + counts.sdfSamples + counts.gaussianSamples) != 0u ? 1u : 0u
-    );
+    uint macroSkips = simd_sum(active ? counts.macroSkips : 0u);
+    uint macroDescents = simd_sum(active ? counts.macroDescents : 0u);
     uint voxelSteps = simd_sum(active ? counts.voxelSteps : 0u);
     uint sdfSamples = simd_sum(active ? counts.sdfSamples : 0u);
     uint gaussianSamples = simd_sum(active ? counts.gaussianSamples : 0u);
@@ -401,6 +415,7 @@ kernel void raycastHybrid(
     bool opticsEnabled = (options & FEATURE_OPTICS) != 0u;
     bool sdfEnabled = (options & FEATURE_SDF) != 0u;
     bool gaussianEnabled = (options & FEATURE_GAUSSIAN) != 0u;
+    uint primitiveMask = (sdfEnabled ? 1u : 0u) | (opticsEnabled ? 2u : 0u);
     uint secondaryRays = 0u;
     uint surfaceSunShadows = 0u;
     uint surfaceLocalShadows = 0u;
@@ -420,11 +435,8 @@ kernel void raycastHybrid(
     bool hasHit = traceMixedScene(
         volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
         origin, direction, uniforms.cameraUpAndMaxDistance.w,
-        uniforms.cameraPositionAndTime.w, hit, counts
+        uniforms.cameraPositionAndTime.w, primitiveMask, hit, counts
     );
-    if (!sdfEnabled && hasHit && hit.primitiveKind != 0u) {
-        hasHit = false;
-    }
 
     if (hasHit) {
         float3 point = origin + direction * hit.t;
@@ -514,10 +526,13 @@ kernel void raycastHybrid(
                     bool secondaryFound = traceOpticalScene(
                         volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
                         path.secondaryOrigin, path.exitDirection, uniforms.cameraUpAndMaxDistance.w,
-                        uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts, secondaryOpticalBudget
+                        uniforms.cameraPositionAndTime.w, primitiveMask,
+                        secondaryHit, secondaryCounts, secondaryOpticalBudget
                     );
                     secondaryRays += 1u;
                     counts.hierarchicalSteps += secondaryCounts.hierarchicalSteps;
+                    counts.macroSkips += secondaryCounts.macroSkips;
+                    counts.macroDescents += secondaryCounts.macroDescents;
                     counts.voxelSteps += secondaryCounts.voxelSteps;
                     counts.sdfSamples += secondaryCounts.sdfSamples;
                     counts.gaussianSamples += secondaryCounts.gaussianSamples;
@@ -531,7 +546,8 @@ kernel void raycastHybrid(
                             : materials[secondaryMaterial].baseColorRoughness.xyz;
                         transmittedColor = shadeSecondaryHit(
                             path.secondaryOrigin + path.exitDirection * secondaryHit.t, secondaryHit.normal,
-                            secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w, lights, scene,
+                            secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w,
+                            lightsEnabled, lights, scene,
                             uniforms.cameraPositionAndTime.w, secondaryOpticalBudget
                         );
                         if (secondaryHit.primitiveKind != 0u) {
@@ -553,10 +569,13 @@ kernel void raycastHybrid(
             bool secondaryFound = traceOpticalScene(
                 volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
                 point + hit.normal * 0.01f, reflectionDirection, uniforms.cameraUpAndMaxDistance.w,
-                uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts, secondaryOpticalBudget
+                uniforms.cameraPositionAndTime.w, primitiveMask,
+                secondaryHit, secondaryCounts, secondaryOpticalBudget
             );
             secondaryRays += 1u;
             counts.hierarchicalSteps += secondaryCounts.hierarchicalSteps;
+            counts.macroSkips += secondaryCounts.macroSkips;
+            counts.macroDescents += secondaryCounts.macroDescents;
             counts.voxelSteps += secondaryCounts.voxelSteps;
             counts.sdfSamples += secondaryCounts.sdfSamples;
             counts.gaussianSamples += secondaryCounts.gaussianSamples;
@@ -570,7 +589,8 @@ kernel void raycastHybrid(
                     : materials[secondaryMaterial].baseColorRoughness.xyz;
                 reflectionColor = shadeSecondaryHit(
                     point + reflectionDirection * secondaryHit.t, secondaryHit.normal,
-                    secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w, lights, scene,
+                    secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w,
+                    lightsEnabled, lights, scene,
                     uniforms.cameraPositionAndTime.w, secondaryOpticalBudget
                 );
                 if (secondaryHit.primitiveKind != 0u) {

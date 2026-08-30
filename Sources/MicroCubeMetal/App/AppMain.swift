@@ -38,6 +38,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     var onRenderStateChanged: ((RenderState) -> Void)?
+    var accessibilityAnnouncementHandler: (String) -> Void = { announcement in
+        NSAccessibility.post(
+            element: NSApplication.shared,
+            notification: .announcementRequested,
+            userInfo:
+            [
+                .announcement: announcement,
+                .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+            ]
+        )
+    }
 
     static func main() {
         let application = NSApplication.shared
@@ -61,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         metalView?.releaseMouse()
     }
 
-    private func configureMenu() {
+    func configureMenu() {
         let mainMenu = NSMenu()
 
         let applicationItem = NSMenuItem()
@@ -87,21 +98,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let explainerItem = viewMenu.addItem(
             withTitle: "Why Rays Explainer",
             action: #selector(toggleExplainer(_:)),
-            keyEquivalent: "i"
+            keyEquivalent: ""
         )
-        explainerItem.keyEquivalentModifierMask = [.command]
         explainerItem.target = self
         let hudItem = viewMenu.addItem(
             withTitle: "Toggle HUD",
             action: #selector(toggleHUD(_:)),
-            keyEquivalent: "h"
+            keyEquivalent: ""
         )
-        hudItem.keyEquivalentModifierMask = [.command]
         hudItem.target = self
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 
-        NSApp.mainMenu = mainMenu
+        NSApplication.shared.mainMenu = mainMenu
     }
 
     private func configureWindow() {
@@ -272,7 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @discardableResult
-    private func handleRenderAction(_ action: RenderAction) -> Bool {
+    func handleRenderAction(_ action: RenderAction) -> Bool {
         let consumed = renderState.apply(action)
         switch action {
         case .toggleFullscreen:
@@ -287,6 +296,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else if let metalView {
                 window?.makeFirstResponder(metalView)
             }
+        case .togglePause:
+            accessibilityAnnouncementHandler(
+                renderState.paused
+                    ? "Scene motion paused. Camera remains active."
+                    : "Scene motion resumed."
+            )
         default:
             break
         }

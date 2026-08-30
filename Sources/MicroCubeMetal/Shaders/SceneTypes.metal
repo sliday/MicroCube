@@ -91,6 +91,8 @@ struct HybridHit {
 
 struct TraceCounts {
     uint hierarchicalSteps;
+    uint macroSkips;
+    uint macroDescents;
     uint voxelSteps;
     uint sdfSamples;
     uint gaussianSamples;

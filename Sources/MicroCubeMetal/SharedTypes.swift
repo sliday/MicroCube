@@ -94,6 +94,16 @@ enum EvidenceView: UInt32, CaseIterable {
         case .cost: "COST"
         }
     }
+
+    var legend: String {
+        switch self {
+        case .final: "HYBRID FIELD · SURFACE + VOLUME"
+        case .grid: "CELL FLAGS · VOXEL GREEN · SDF MAGENTA · VOLUME CYAN · LIGHT AMBER · FRACTAL RED"
+        case .pyramid: "COARSE → FINE · MIXED 6→0 · VOXELS 9→0"
+        case .steps: "R MACRO · G SOLID/SDF · B VOLUME/RAYS"
+        case .cost: "COOL LIGHT WORK · HOT HEAVY WORK"
+        }
+    }
 }
 
 enum RenderAction: Equatable {
@@ -231,8 +241,12 @@ struct HUDState {
         var lines = [
             lineOne,
             "MIXED 64³ MIP 6→0 · VOXELS 512³ MIP 9→0 · VOXEL DDA + SDF RM + GAUSSIAN",
+            renderState.evidenceView.legend,
             String(format: "%.0f%% SCALE · %@", renderScale * 100.0, featuresText),
         ]
+        if renderState.paused {
+            lines.append("MOTION HELD · CAMERA LIVE")
+        }
         if let counters {
             lines.append(
                 "MACRO SKIPS \(counters.macroSkips) · DESCENTS \(counters.macroDescents) · " +

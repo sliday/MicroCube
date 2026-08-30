@@ -491,6 +491,7 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
                             float3 direction,
                             float maximumDistance,
                             float time,
+                            uint primitiveMask,
                             thread HybridHit &hit,
                             thread TraceCounts &counts) {
     float nearT;
@@ -515,6 +516,7 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
         }
         uint flags = mixed.read(uint3(macroCell) >> level, level).x;
         if (flags != 0u && level > 0u) {
+            ++counts.macroDescents;
             --level;
             continue;
         }
@@ -530,6 +532,7 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
         }
 
         if (flags == 0u) {
+            ++counts.macroSkips;
             t = nodeExit + kTraceEpsilon;
             level = min(scene.grid.z, level + 1u);
             continue;
@@ -562,6 +565,10 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
                 continue;
             }
             SDFInstance sourceInstance = sdfs[instanceIndex];
+            uint candidateMask = sourceInstance.metadata.x == 4u ? 2u : 1u;
+            if ((primitiveMask & candidateMask) == 0u) {
+                continue;
+            }
             SDFInstance instance = animateSDFInstance(sourceInstance, time);
             float sweptNear;
             float sweptFar;
@@ -629,6 +636,26 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
                             float3 origin,
                             float3 direction,
                             float maximumDistance,
+                            float time,
+                            thread HybridHit &hit,
+                            thread TraceCounts &counts) {
+    return traceMixedScene(
+        voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+        origin, direction, maximumDistance, time, 3u, hit, counts
+    );
+}
+
+inline bool traceMixedScene(texture3d<uint, access::read> voxels,
+                            texture3d<uint, access::read> mixed,
+                            device const CellHeader *headers,
+                            device const uint *sdfRefs,
+                            device const uint *gaussianRefs,
+                            device const SDFInstance *sdfs,
+                            device const Gaussian *gaussians,
+                            constant SceneUniforms &scene,
+                            float3 origin,
+                            float3 direction,
+                            float maximumDistance,
                             thread HybridHit &hit,
                             thread TraceCounts &counts) {
     return traceMixedScene(
@@ -649,6 +676,7 @@ inline bool traceOpticalScene(texture3d<uint, access::read> voxels,
                               float3 direction,
                               float maximumDistance,
                               float time,
+                              uint primitiveMask,
                               thread HybridHit &hit,
                               thread TraceCounts &counts,
                               thread OpticalRayBudget &opticalBudget) {
@@ -659,7 +687,28 @@ inline bool traceOpticalScene(texture3d<uint, access::read> voxels,
     }
     return traceMixedScene(
         voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
-        origin, direction, maximumDistance, time, hit, counts
+        origin, direction, maximumDistance, time, primitiveMask, hit, counts
+    );
+}
+
+inline bool traceOpticalScene(texture3d<uint, access::read> voxels,
+                              texture3d<uint, access::read> mixed,
+                              device const CellHeader *headers,
+                              device const uint *sdfRefs,
+                              device const uint *gaussianRefs,
+                              device const SDFInstance *sdfs,
+                              device const Gaussian *gaussians,
+                              constant SceneUniforms &scene,
+                              float3 origin,
+                              float3 direction,
+                              float maximumDistance,
+                              float time,
+                              thread HybridHit &hit,
+                              thread TraceCounts &counts,
+                              thread OpticalRayBudget &opticalBudget) {
+    return traceOpticalScene(
+        voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+        origin, direction, maximumDistance, time, 3u, hit, counts, opticalBudget
     );
 }
 
