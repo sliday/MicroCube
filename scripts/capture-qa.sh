@@ -13,11 +13,14 @@ REVIEWER=${QA_REVIEWER:-unreviewed}
 REVIEWED_AT=${QA_REVIEWED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 REVIEW_STATUS=${QA_REVIEW_STATUS:-fail}
 REVIEW_NOTES=${QA_REVIEW_NOTES:-"Capture generated. A human reviewer must approve this row."}
+reviewer_key=${REVIEWER//[[:space:]]/}
+reviewer_key=${(L)reviewer_key}
 trap 'rm -rf "$ROW_DIR"' EXIT
 
 [[ -x "$EXECUTABLE" ]] || { print -u2 -- "Packaged executable is missing: $EXECUTABLE"; exit 1; }
 command -v jq >/dev/null 2>&1 || { print -u2 -- "jq is required to create the visual review."; exit 2; }
 [[ "$REVIEW_STATUS" == pass || "$REVIEW_STATUS" == fail ]] || { print -u2 -- "QA_REVIEW_STATUS must be pass or fail."; exit 2; }
+[[ "$REVIEW_STATUS" != pass || ( "$reviewer_key" != unreviewed && -n "$reviewer_key" ) ]] || { print -u2 -- "QA_REVIEWER must name the reviewer when QA_REVIEW_STATUS=pass."; exit 2; }
 mkdir -p "$CAPTURE_DIR"
 
 capture() {
@@ -25,14 +28,24 @@ capture() {
     local stem=$(print -r -- "$row" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-$//')${label:+-$label}
     local png="$CAPTURE_DIR/$stem.png"
     local report="$CAPTURE_DIR/$stem.json"
+    local window_points="[${window%x*}, ${window#*x}]"
+    rm -f "$png" "$report"
     "$EXECUTABLE" --qa-scene "$scene" --qa-features "$features" --qa-time "$time" --qa-step 0.008333333333333333 --qa-camera reset --qa-window-points "$window" --qa-drawable 1280x800 --qa-scale 1 --qa-view "$view" --qa-frames 1 --qa-capture-scope "$scope" --qa-capture "$png" --qa-report "$report"
-    jq -e --arg png "$png" '
-        .schemaVersion == 1 and .status == "pass" and .failure == null and .windowCount == 1 and
-        .passCount == 2 and .commandErrors == 0 and .droppedDrawables == 0 and .semaphoreTimeouts == 0 and
+    jq -e --arg png "$png" --arg scene "$scene" --arg featureMask "$features" --argjson fixedTime "$time" '
+        .schemaVersion == 1 and .status == "pass" and .failure == null and
+        (.device | type == "string" and length > 0) and (.os | type == "string" and length > 0) and
+        .scene == $scene and .fixedTime == $fixedTime and .fixedStep == (1 / 120) and .drawablePixels == [1280, 800] and .renderScale == 1 and
+        .windowCount == 1 and .productionKernels == ["generateTerrain", "reduceOccupancy", "buildMixedOccupancy", "reduceMixedOccupancy", "clearVolumeLighting", "injectVolumeLighting", "raycastHybrid"] and .featureMask == $featureMask and
+        .passCount == 2 and (.stepCounters | type == "object") and (.shadowSampleCounts | type == "object") and
+        (.budgetOverflows | type == "number" and isfinite and . >= 0 and floor == .) and .commandErrors == 0 and .droppedDrawables == 0 and .semaphoreTimeouts == 0 and
         .capturePath == $png
     ' "$report" >/dev/null
     [[ -s "$png" ]] || { print -u2 -- "Capture is empty: $png"; exit 1; }
-    jq -n --arg path "captures/${png:t}" --arg sha256 "$(shasum -a 256 "$png" | awk '{print $1}')" '{path: $path, sha256: $sha256}' >> "$ROW_DIR/$row.jsonl"
+    jq -n --arg path "captures/${png:t}" --arg sha256 "$(shasum -a 256 "$png" | awk '{print $1}')" \
+        --arg reportPath "captures/${report:t}" --arg reportSHA256 "$(shasum -a 256 "$report" | awk '{print $1}')" \
+        --arg scene "$scene" --arg featureMask "$features" --argjson fixedTime "$time" --arg view "$view" \
+        --arg captureScope "$scope" --argjson windowPoints "$window_points" \
+        '{path: $path, sha256: $sha256, reportPath: $reportPath, reportSHA256: $reportSHA256, scene: $scene, featureMask: $featureMask, fixedTime: $fixedTime, view: $view, captureScope: $captureScope, windowPoints: $windowPoints, drawablePixels: [1280, 800]}' >> "$ROW_DIR/$row.jsonl"
 }
 
 capture "Shadow beauty and mismatch" shadow-fixture shadows 0 final drawable 1280x800 beauty

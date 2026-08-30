@@ -396,6 +396,31 @@ final class QAModeTests: XCTestCase {
 }
 
 final class ScriptContractTests: XCTestCase {
+    private enum FakeProcessMode: Equatable {
+        case launched
+        case multiple
+        case unrelated
+        case zero
+        case occupied
+        case lingering
+    }
+
+    private struct CaptureSpec {
+        let row: String
+        let stem: String
+        let scene: String
+        let featureMask: String
+        let time: String
+        let view: String
+        let captureScope: String
+        let window: String
+
+        var path: String { "captures/\(stem).png" }
+        var reportPath: String { "captures/\(stem).json" }
+        var fixedTime: Double { Double(time)! }
+        var windowPoints: [Int] { window.split(separator: "x").compactMap { Int($0) } }
+    }
+
     private let captureRows = [
         "Shadow beauty and mismatch",
         "Mixed primitive ID and steps",
@@ -410,6 +435,32 @@ final class ScriptContractTests: XCTestCase {
         "Explainer responsive states",
     ]
 
+    private let captureSpecs = [
+        CaptureSpec(row: "Shadow beauty and mismatch", stem: "shadow-beauty-and-mismatch-beauty", scene: "shadow-fixture", featureMask: "shadows", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Shadow beauty and mismatch", stem: "shadow-beauty-and-mismatch-mismatch", scene: "shadow-fixture", featureMask: "shadows", time: "0", view: "shadow-mismatch", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Mixed primitive ID and steps", stem: "mixed-primitive-id-and-steps-primitive-id", scene: "mixed-fixture", featureMask: "all", time: "0", view: "primitive-id", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Mixed primitive ID and steps", stem: "mixed-primitive-id-and-steps-steps", scene: "mixed-fixture", featureMask: "all", time: "0", view: "steps", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Monsters", stem: "monsters-t0", scene: "hero", featureMask: "sdf,lights,gaussian,shadows", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Monsters", stem: "monsters-t1", scene: "hero", featureMask: "sdf,lights,gaussian,shadows", time: "1", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Optics", stem: "optics-optics", scene: "optics-fixture", featureMask: "optics", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Optics", stem: "optics-none", scene: "optics-fixture", featureMask: "none", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Fog blocker", stem: "fog-blocker-clear", scene: "fog-clear", featureMask: "gaussian,lights,shadows", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Fog blocker", stem: "fog-blocker-blocked", scene: "fog-blocked", featureMask: "gaussian,lights,shadows", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Gaussian", stem: "gaussian-gaussian", scene: "gaussian-fixture", featureMask: "gaussian", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Gaussian", stem: "gaussian-none", scene: "gaussian-fixture", featureMask: "none", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Smoke-cast surface shadow", stem: "smoke-cast-surface-shadow-smoke", scene: "gaussian-fixture", featureMask: "gaussian,lights,shadows", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Smoke-cast surface shadow", stem: "smoke-cast-surface-shadow-clear", scene: "gaussian-fixture", featureMask: "lights,shadows", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Fractal normals", stem: "fractal-normals-normals", scene: "fractal-fixture", featureMask: "sdf", time: "0", view: "normals", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Hero final field", stem: "hero-final-field-final", scene: "hero", featureMask: "all", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Five evidence views", stem: "five-evidence-views-final", scene: "hero", featureMask: "all", time: "0", view: "final", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Five evidence views", stem: "five-evidence-views-grid", scene: "hero", featureMask: "all", time: "0", view: "grid", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Five evidence views", stem: "five-evidence-views-pyramid", scene: "hero", featureMask: "all", time: "0", view: "pyramid", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Five evidence views", stem: "five-evidence-views-steps", scene: "hero", featureMask: "all", time: "0", view: "steps", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Five evidence views", stem: "five-evidence-views-cost", scene: "hero", featureMask: "all", time: "0", view: "cost", captureScope: "drawable", window: "1280x800"),
+        CaptureSpec(row: "Explainer responsive states", stem: "explainer-responsive-states-expanded", scene: "hero", featureMask: "all", time: "0", view: "final", captureScope: "window", window: "1280x800"),
+        CaptureSpec(row: "Explainer responsive states", stem: "explainer-responsive-states-collapsed", scene: "hero", featureMask: "all", time: "0", view: "final", captureScope: "window", window: "1099x800"),
+    ]
+
     func testCompletionVerifierAcceptsValidEvidenceAndWritesHashLinkedReport() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -419,7 +470,11 @@ final class ScriptContractTests: XCTestCase {
         XCTAssertEqual(result.status, 0, result.output)
         let report = try json(at: fixture.evidence.appendingPathComponent("completion.json"))
         XCTAssertEqual(report["status"] as? String, "pass")
-        XCTAssertFalse((report["inputs"] as? [String: String] ?? [:]).isEmpty)
+        let inputs = try XCTUnwrap(report["inputs"] as? [String: String])
+        let visualReview = fixture.evidence.appendingPathComponent("visual-review.json")
+        let firstCapture = fixture.evidence.appendingPathComponent(captureSpecs[0].path)
+        XCTAssertEqual(inputs["visual-review.json"], sha256(try Data(contentsOf: visualReview)))
+        XCTAssertEqual(inputs[captureSpecs[0].path], sha256(try Data(contentsOf: firstCapture)))
     }
 
     func testCompletionVerifierRejectsStaleCaptureHashAndInvalidBenchmarkSamples() throws {
@@ -443,13 +498,258 @@ final class ScriptContractTests: XCTestCase {
 
         let invalidResult = try runScript("verify-completion.sh", arguments: [benchmarkFixture.evidence.path])
         XCTAssertNotEqual(invalidResult.status, 0, invalidResult.output)
+        XCTAssertTrue(invalidResult.output.contains("not a valid M4 Max benchmark report"), invalidResult.output)
+        let invalidCompletion = try json(at: benchmarkFixture.evidence.appendingPathComponent("completion.json"))
+        XCTAssertEqual(invalidCompletion["status"] as? String, "fail")
+        XCTAssertFalse((invalidCompletion["inputs"] as? [String: String] ?? [:]).isEmpty)
 
         let windowFixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: windowFixture.root) }
-        try writeJSON(["status": "pass", "windowCount": 2], to: windowFixture.evidence.appendingPathComponent("package-verification.json"))
+        try writeJSON(["status": "pass", "processCount": 1, "windowCount": 2], to: windowFixture.evidence.appendingPathComponent("package-verification.json"))
 
         let windowResult = try runScript("verify-completion.sh", arguments: [windowFixture.evidence.path])
         XCTAssertNotEqual(windowResult.status, 0, windowResult.output)
+        XCTAssertTrue(windowResult.output.contains("one process and one window"), windowResult.output)
+        let windowCompletion = try json(at: windowFixture.evidence.appendingPathComponent("completion.json"))
+        XCTAssertEqual(windowCompletion["status"] as? String, "fail")
+        XCTAssertFalse((windowCompletion["inputs"] as? [String: String] ?? [:]).isEmpty)
+    }
+
+    func testCompletionVerifierRejectsCaptureStateMismatch() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let reviewURL = fixture.evidence.appendingPathComponent("visual-review.json")
+        var review = try json(at: reviewURL)
+        var rows = try XCTUnwrap(review["rows"] as? [[String: Any]])
+        var captures = try XCTUnwrap(rows[0]["captures"] as? [[String: Any]])
+        captures[0]["scene"] = "hero"
+        rows[0]["captures"] = captures
+        review["rows"] = rows
+        try writeJSON(review, to: reviewURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("capture matrix"), result.output)
+    }
+
+    func testCompletionVerifierRejectsCaptureReportWithDifferentStem() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let reviewURL = fixture.evidence.appendingPathComponent("visual-review.json")
+        let alternateReport = fixture.evidence.appendingPathComponent("captures/alternate.json")
+        try FileManager.default.copyItem(
+            at: fixture.evidence.appendingPathComponent(captureSpecs[0].reportPath),
+            to: alternateReport
+        )
+        var review = try json(at: reviewURL)
+        var rows = try XCTUnwrap(review["rows"] as? [[String: Any]])
+        var captures = try XCTUnwrap(rows[0]["captures"] as? [[String: Any]])
+        captures[0]["reportPath"] = "captures/alternate.json"
+        captures[0]["reportSHA256"] = sha256(try Data(contentsOf: alternateReport))
+        rows[0]["captures"] = captures
+        review["rows"] = rows
+        try writeJSON(review, to: reviewURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("capture matrix"), result.output)
+    }
+
+    func testCompletionVerifierRejectsWrongKernelSetAndBudgetOverflow() throws {
+        for mutation in ["kernels", "budget", "step"] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let reportURL = fixture.evidence.appendingPathComponent(captureSpecs[0].reportPath)
+            var report = try json(at: reportURL)
+            if mutation == "kernels" {
+                report["productionKernels"] = ["one", "two", "three", "four", "five", "six"]
+            } else if mutation == "budget" {
+                report["budgetOverflows"] = "invalid"
+            } else {
+                report["fixedStep"] = 0.1
+            }
+            try writeJSON(report, to: reportURL)
+            let reviewURL = fixture.evidence.appendingPathComponent("visual-review.json")
+            var review = try json(at: reviewURL)
+            var rows = try XCTUnwrap(review["rows"] as? [[String: Any]])
+            var captures = try XCTUnwrap(rows[0]["captures"] as? [[String: Any]])
+            captures[0]["reportSHA256"] = sha256(try Data(contentsOf: reportURL))
+            rows[0]["captures"] = captures
+            review["rows"] = rows
+            try writeJSON(review, to: reviewURL)
+
+            let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+            XCTAssertNotEqual(result.status, 0, result.output)
+            XCTAssertTrue(result.output.contains("does not match its reviewed capture state"), result.output)
+        }
+    }
+
+    func testCompletionVerifierRejectsNegativeAndFractionalBudgetOverflow() throws {
+        for budgetOverflows in [-1.0, 1.5] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let reportURL = fixture.evidence.appendingPathComponent(captureSpecs[0].reportPath)
+            var report = try json(at: reportURL)
+            report["budgetOverflows"] = budgetOverflows
+            try writeJSON(report, to: reportURL)
+            let reviewURL = fixture.evidence.appendingPathComponent("visual-review.json")
+            var review = try json(at: reviewURL)
+            var rows = try XCTUnwrap(review["rows"] as? [[String: Any]])
+            var captures = try XCTUnwrap(rows[0]["captures"] as? [[String: Any]])
+            captures[0]["reportSHA256"] = sha256(try Data(contentsOf: reportURL))
+            rows[0]["captures"] = captures
+            review["rows"] = rows
+            try writeJSON(review, to: reviewURL)
+
+            let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+            XCTAssertNotEqual(result.status, 0, "budgetOverflows=\(budgetOverflows): \(result.output)")
+            XCTAssertTrue(result.output.contains("does not match its reviewed capture state"), result.output)
+        }
+    }
+
+    func testCompletionVerifierRejectsCapturePathEscape() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let escaped = fixture.root.appendingPathComponent("outside.png")
+        try Data("outside".utf8).write(to: escaped)
+        let reviewURL = fixture.evidence.appendingPathComponent("visual-review.json")
+        var review = try json(at: reviewURL)
+        var rows = try XCTUnwrap(review["rows"] as? [[String: Any]])
+        var captures = try XCTUnwrap(rows[0]["captures"] as? [[String: Any]])
+        captures[0]["path"] = "../outside.png"
+        captures[0]["sha256"] = sha256(try Data(contentsOf: escaped))
+        rows[0]["captures"] = captures
+        review["rows"] = rows
+        try writeJSON(review, to: reviewURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("invalid capture path"), result.output)
+    }
+
+    func testCompletionVerifierRequiresTraceReviewerAndTime() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let traceReview = fixture.evidence.appendingPathComponent("trace-review.json")
+        var trace = try json(at: traceReview)
+        trace.removeValue(forKey: "reviewer")
+        trace.removeValue(forKey: "reviewedAt")
+        try writeJSON(trace, to: traceReview)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("trace-review.json is invalid"), result.output)
+    }
+
+    func testCompletionVerifierRejectsMalformedTraceReviewTime() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let traceReview = fixture.evidence.appendingPathComponent("trace-review.json")
+        var trace = try json(at: traceReview)
+        trace["reviewedAt"] = "2026-02-29T00:00:00Z"
+        try writeJSON(trace, to: traceReview)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("trace-review.json is invalid"), result.output)
+    }
+
+    func testCompletionVerifierRejectsUnreviewedVisualRowsAndMalformedReviewTimes() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let reviewURL = fixture.evidence.appendingPathComponent("visual-review.json")
+        var review = try json(at: reviewURL)
+        var rows = try XCTUnwrap(review["rows"] as? [[String: Any]])
+        rows[0]["reviewer"] = " UnReviewed "
+        rows[1]["reviewedAt"] = "2026-02-29T00:00:00Z"
+        review["rows"] = rows
+        try writeJSON(review, to: reviewURL)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("invalid review matrix"), result.output)
+    }
+
+    func testCompletionVerifierRejectsTracePathEscape() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let escaped = fixture.root.appendingPathComponent("outside.gputrace")
+        try Data("outside trace".utf8).write(to: escaped)
+        let traceReview = fixture.evidence.appendingPathComponent("trace-review.json")
+        var trace = try json(at: traceReview)
+        trace["tracePath"] = "../outside.gputrace"
+        trace["traceSHA256"] = sha256(try Data(contentsOf: escaped))
+        try writeJSON(trace, to: traceReview)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("Trace artifact is missing"), result.output)
+    }
+
+    func testCompletionVerifierRequiresPackageProcessCount() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let package = fixture.evidence.appendingPathComponent("package-verification.json")
+        try writeJSON(["status": "pass", "windowCount": 1], to: package)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("one process"), result.output)
+    }
+
+    func testCompletionVerifierRejectsPassingPackageWithFailure() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let package = fixture.evidence.appendingPathComponent("package-verification.json")
+        try writeJSON([
+            "status": "pass",
+            "failure": "Launch fault",
+            "processCount": 1,
+            "windowCount": 1,
+        ], to: package)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("one process"), result.output)
+    }
+
+    func testCompletionVerifierRequiresBenchmarkOS() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let benchmark = fixture.evidence.appendingPathComponent("benchmark-1280x800-run1.json")
+        var report = try json(at: benchmark)
+        report.removeValue(forKey: "os")
+        try writeJSON(report, to: benchmark)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("not a valid M4 Max benchmark report"), result.output)
+    }
+
+    func testCompletionVerifierRejectsPassingBenchmarkWithFailure() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let benchmark = fixture.evidence.appendingPathComponent("benchmark-1280x800-run1.json")
+        var report = try json(at: benchmark)
+        report["failure"] = "GPU fault"
+        try writeJSON(report, to: benchmark)
+
+        let result = try runScript("verify-completion.sh", arguments: [fixture.evidence.path])
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("not a valid M4 Max benchmark report"), result.output)
     }
 
     func testPackageVerifierRejectsMissingKernelAndWrongArchitecture() throws {
@@ -475,6 +775,195 @@ final class ScriptContractTests: XCTestCase {
         )
     }
 
+    func testPackageVerifierAcceptsValidBundleAndRecordsOneProcess() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeValidFakeApp(in: fixture.root)
+        let tools = try makeFakeTools(in: fixture.root)
+        let reportURL = fixture.root.appendingPathComponent("package-valid.json")
+
+        let result = try runScript(
+            "verify-app.sh",
+            arguments: [app.path, reportURL.path],
+            environment: ["PATH": toolPath(tools), "TMPDIR": fixture.root.path]
+        )
+
+        XCTAssertEqual(result.status, 0, result.output)
+        let report = try json(at: reportURL)
+        XCTAssertEqual(report["status"] as? String, "pass")
+        XCTAssertEqual(report["processCount"] as? Int, 1)
+        XCTAssertEqual(report["windowCount"] as? Int, 1)
+        let invocation = try String(
+            contentsOf: fixture.root.appendingPathComponent("package-invocations.log"),
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "--qa-scene hero --qa-features all --qa-time 0 --qa-step 0.008333333333333333 --qa-camera reset --qa-window-points 1280x800 --qa-drawable 1280x800 --qa-scale 1 --qa-view final --qa-frames 120 --qa-capture-scope drawable --qa-report "
+        XCTAssertTrue(invocation.hasPrefix(prefix), invocation)
+        let qaReport = String(invocation.dropFirst(prefix.count))
+        XCTAssertTrue(qaReport.hasPrefix("\(fixture.root.path)/microcube-package-qa."), invocation)
+        XCTAssertFalse(qaReport.contains(where: \.isWhitespace), invocation)
+    }
+
+    func testPackageVerifierRejectsNegativeAndFractionalBudgetOverflow() throws {
+        for budgetOverflowsJSON in ["-1", "1.5"] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let app = try makeValidFakeApp(in: fixture.root, budgetOverflowsJSON: budgetOverflowsJSON)
+            let tools = try makeFakeTools(in: fixture.root)
+            let reportURL = fixture.root.appendingPathComponent("package-invalid-counter.json")
+
+            let result = try runScript(
+                "verify-app.sh",
+                arguments: [app.path, reportURL.path],
+                environment: ["PATH": toolPath(tools)]
+            )
+
+            XCTAssertNotEqual(result.status, 0, "budgetOverflows=\(budgetOverflowsJSON): \(result.output)")
+            XCTAssertTrue(result.output.contains("does not prove one window and two passes"), result.output)
+        }
+    }
+
+    func testPackageVerifierRejectsMultipleProcesses() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeValidFakeApp(in: fixture.root, extraProcess: true)
+        defer { terminateFixtureChild(in: fixture.root) }
+        let tools = try makeFakeTools(in: fixture.root, processMode: .multiple)
+        let reportURL = fixture.root.appendingPathComponent("package-multiple.json")
+
+        let result = try runScript(
+            "verify-app.sh",
+            arguments: [app.path, reportURL.path],
+            environment: ["PATH": toolPath(tools)]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("one application process"), result.output)
+        XCTAssertEqual(try json(at: reportURL)["status"] as? String, "fail")
+    }
+
+    func testPackageVerifierRejectsUnrelatedAndZeroProcessSamples() throws {
+        for mode in [FakeProcessMode.unrelated, .zero] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let app = try makeValidFakeApp(in: fixture.root, extraProcess: mode == .unrelated)
+            defer { terminateFixtureChild(in: fixture.root) }
+            let tools = try makeFakeTools(in: fixture.root, processMode: mode)
+            let reportURL = fixture.root.appendingPathComponent("package-attribution.json")
+
+            let result = try runScript(
+                "verify-app.sh",
+                arguments: [app.path, reportURL.path],
+                environment: ["PATH": toolPath(tools)]
+            )
+
+            XCTAssertNotEqual(result.status, 0, result.output)
+            XCTAssertTrue(result.output.contains("one application process"), result.output)
+            XCTAssertEqual(try json(at: reportURL)["status"] as? String, "fail")
+        }
+    }
+
+    func testPackageVerifierRejectsOccupiedBaselineWithoutKillingIt() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let occupied = Process()
+        occupied.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        occupied.arguments = ["30"]
+        try occupied.run()
+        defer {
+            occupied.terminate()
+            occupied.waitUntilExit()
+        }
+        let app = try makeValidFakeApp(in: fixture.root)
+        let tools = try makeFakeTools(in: fixture.root, processMode: .occupied, occupiedPID: occupied.processIdentifier)
+        let reportURL = fixture.root.appendingPathComponent("package-occupied.json")
+
+        let result = try runScript(
+            "verify-app.sh",
+            arguments: [app.path, reportURL.path],
+            environment: ["PATH": toolPath(tools)]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("already running"), result.output)
+        XCTAssertTrue(occupied.isRunning)
+    }
+
+    func testPackageVerifierRejectsLingeringChildWithoutKillingUnownedSample() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeValidFakeApp(in: fixture.root, extraProcess: true)
+        defer { terminateFixtureChild(in: fixture.root) }
+        let tools = try makeFakeTools(in: fixture.root, processMode: .lingering)
+        let reportURL = fixture.root.appendingPathComponent("package-lingering.json")
+
+        let result = try runScript(
+            "verify-app.sh",
+            arguments: [app.path, reportURL.path],
+            environment: ["PATH": toolPath(tools)]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("surviving application process"), result.output)
+        let childPIDText = try String(contentsOf: fixture.root.appendingPathComponent("package-child.pid"), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let childPID = try XCTUnwrap(Int32(childPIDText))
+        XCTAssertEqual(kill(childPID, 0), 0)
+    }
+
+    func testPackageVerifierTimesOutHungLaunch() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeValidFakeApp(in: fixture.root, hang: true, ignoreTerm: true)
+        let tools = try makeFakeTools(in: fixture.root)
+        let reportURL = fixture.root.appendingPathComponent("package-timeout.json")
+
+        let result = try runScript(
+            "verify-app.sh",
+            arguments: [app.path, reportURL.path],
+            environment: [
+                "PATH": toolPath(tools),
+                "MICROCUBE_VERIFY_MAX_POLLS": "3",
+                "MICROCUBE_VERIFY_TERM_GRACE_POLLS": "3",
+            ]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("timed out"), result.output)
+        XCTAssertEqual(try json(at: reportURL)["status"] as? String, "fail")
+    }
+
+    func testPackageVerifierInterruptKillsAndReapsItsLaunch() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeValidFakeApp(in: fixture.root, hang: true, ignoreTerm: true)
+        let tools = try makeFakeTools(in: fixture.root)
+        let reportURL = fixture.root.appendingPathComponent("package-interrupt.json")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = [scriptURL("verify-app.sh").path, app.path, reportURL.path]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "PATH": toolPath(tools),
+            "MICROCUBE_VERIFY_TERM_GRACE_POLLS": "3",
+        ]) { _, value in value }
+        process.standardOutput = Pipe()
+        process.standardError = process.standardOutput
+        try process.run()
+        let pidFile = fixture.root.appendingPathComponent("package-launch.pid")
+        for _ in 0..<300 where !FileManager.default.fileExists(atPath: pidFile.path) {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let launchPIDText = try String(contentsOf: pidFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let launchPID = try XCTUnwrap(Int32(launchPIDText))
+        defer { kill(launchPID, SIGKILL) }
+
+        process.interrupt()
+        process.waitUntilExit()
+
+        XCTAssertEqual(kill(launchPID, 0), -1)
+    }
+
     func testCaptureScriptWritesElevenApprovedRowsFromQAReports() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -492,8 +981,261 @@ final class ScriptContractTests: XCTestCase {
 
         XCTAssertEqual(result.status, 0, result.output)
         let review = try json(at: fixture.evidence.appendingPathComponent("visual-review.json"))
-        XCTAssertEqual((review["rows"] as? [[String: Any]])?.count, 11)
+        let rows = try XCTUnwrap(review["rows"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 11)
         XCTAssertEqual(review["status"] as? String, "pass")
+        let captures = rows.flatMap { $0["captures"] as? [[String: Any]] ?? [] }
+        XCTAssertEqual(captures.count, 23)
+        for spec in captureSpecs {
+            let capture = try XCTUnwrap(captures.first { $0["path"] as? String == spec.path })
+            XCTAssertEqual(capture["reportPath"] as? String, spec.reportPath)
+            XCTAssertEqual(capture["scene"] as? String, spec.scene)
+            XCTAssertEqual(capture["featureMask"] as? String, spec.featureMask)
+            XCTAssertEqual((capture["fixedTime"] as? NSNumber)?.doubleValue, spec.fixedTime)
+            XCTAssertEqual(capture["view"] as? String, spec.view)
+            XCTAssertEqual(capture["captureScope"] as? String, spec.captureScope)
+            XCTAssertEqual(capture["windowPoints"] as? [Int], spec.windowPoints)
+        }
+        let invocations = try String(contentsOf: fixture.root.appendingPathComponent("qa-invocations.log"), encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let expectedInvocations = captureSpecs.map { spec in
+            let capture = fixture.evidence.appendingPathComponent(spec.path).path
+            let report = fixture.evidence.appendingPathComponent(spec.reportPath).path
+            return "--qa-scene \(spec.scene) --qa-features \(spec.featureMask) --qa-time \(spec.time) --qa-step 0.008333333333333333 --qa-camera reset --qa-window-points \(spec.window) --qa-drawable 1280x800 --qa-scale 1 --qa-view \(spec.view) --qa-frames 1 --qa-capture-scope \(spec.captureScope) --qa-capture \(capture) --qa-report \(report)"
+        }
+        XCTAssertEqual(
+            invocations.map { $0.replacingOccurrences(of: "/private/var/", with: "/var/") },
+            expectedInvocations.map { $0.replacingOccurrences(of: "/private/var/", with: "/var/") }
+        )
+    }
+
+    func testCaptureScriptRejectsStaleOutputWhenExecutableWritesNothing() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = try makeFakeQAApp(in: fixture.root, skipFirstOutput: true)
+
+        let result = try runScript(
+            "capture-qa.sh",
+            arguments: [app.path],
+            environment: [
+                "MICROCUBE_EVIDENCE_DIR": fixture.evidence.path,
+                "QA_REVIEWER": "Fixture Reviewer",
+                "QA_REVIEW_STATUS": "pass",
+            ]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+    }
+
+    func testCaptureScriptRequiresNamedReviewerForPassingReview() throws {
+        for reviewer in [nil, " UnReviewed "] as [String?] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let app = try makeFakeQAApp(in: fixture.root)
+            var environment = [
+                "MICROCUBE_EVIDENCE_DIR": fixture.evidence.path,
+                "QA_REVIEW_STATUS": "pass",
+            ]
+            environment["QA_REVIEWER"] = reviewer
+
+            let result = try runScript(
+                "capture-qa.sh",
+                arguments: [app.path],
+                environment: environment
+            )
+
+            XCTAssertNotEqual(result.status, 0, result.output)
+            XCTAssertTrue(result.output.contains("QA_REVIEWER"), result.output)
+        }
+    }
+
+    func testCaptureScriptRejectsWrongKernelSetAndMalformedBudgetOverflow() throws {
+        for options in [(validKernels: false, budgetOverflowsJSON: "6701"), (validKernels: true, budgetOverflowsJSON: "\"invalid\"")] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let app = try makeFakeQAApp(
+                in: fixture.root,
+                validKernels: options.validKernels,
+                budgetOverflowsJSON: options.budgetOverflowsJSON
+            )
+
+            let result = try runScript(
+                "capture-qa.sh",
+                arguments: [app.path],
+                environment: [
+                    "MICROCUBE_EVIDENCE_DIR": fixture.evidence.path,
+                    "QA_REVIEWER": "Fixture Reviewer",
+                    "QA_REVIEW_STATUS": "pass",
+                ]
+            )
+
+            XCTAssertNotEqual(result.status, 0, result.output)
+        }
+    }
+
+    func testCaptureScriptRejectsNegativeAndFractionalBudgetOverflow() throws {
+        for budgetOverflowsJSON in ["-1", "1.5"] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let app = try makeFakeQAApp(in: fixture.root, budgetOverflowsJSON: budgetOverflowsJSON)
+
+            let result = try runScript(
+                "capture-qa.sh",
+                arguments: [app.path],
+                environment: [
+                    "MICROCUBE_EVIDENCE_DIR": fixture.evidence.path,
+                    "QA_REVIEWER": "Fixture Reviewer",
+                    "QA_REVIEW_STATUS": "pass",
+                ]
+            )
+
+            XCTAssertNotEqual(result.status, 0, "budgetOverflows=\(budgetOverflowsJSON): \(result.output)")
+        }
+    }
+
+    func testBenchmarkScriptRunsSixValidReports() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let script = try copyScript("benchmark.sh", into: fixture.root)
+        let app = try makeFakeBenchmarkApp(in: fixture.root, os: "macOS Fixture")
+        let tools = try makeFakeTools(in: fixture.root)
+
+        let result = try runScript(
+            at: script,
+            arguments: [app.path],
+            environment: ["PATH": toolPath(tools)]
+        )
+
+        XCTAssertEqual(result.status, 0, result.output)
+        let evidence = fixture.root.appendingPathComponent("dist/evidence")
+        let reports = try FileManager.default.contentsOfDirectory(atPath: evidence.path)
+            .filter { $0.hasPrefix("benchmark-") && $0.hasSuffix(".json") }
+        XCTAssertEqual(reports.count, 6)
+        let invocations = try String(contentsOf: fixture.root.appendingPathComponent("benchmark-invocations.log"), encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let expected = ["1280x800", "2560x1600"].flatMap { size in
+            (1...3).map { run in
+                let report = fixture.root.resolvingSymlinksInPath().appendingPathComponent("dist/evidence/benchmark-\(size)-run\(run).json").path
+                return "--qa-scene hero --qa-features all --qa-time 0 --qa-step 0.008333333333333333 --qa-camera reset --qa-window-points \(size) --qa-drawable \(size) --qa-scale 1 --qa-view final --benchmark --benchmark-warmup 180 --benchmark-samples 900 --qa-report \(report)"
+            }
+        }
+        XCTAssertEqual(
+            invocations.map { $0.replacingOccurrences(of: "/private/var/", with: "/var/") },
+            expected.map { $0.replacingOccurrences(of: "/private/var/", with: "/var/") }
+        )
+    }
+
+    func testBenchmarkScriptRejectsMissingOS() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let script = try copyScript("benchmark.sh", into: fixture.root)
+        let app = try makeFakeBenchmarkApp(in: fixture.root, os: "")
+        let tools = try makeFakeTools(in: fixture.root)
+
+        let result = try runScript(
+            at: script,
+            arguments: [app.path],
+            environment: ["PATH": toolPath(tools)]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+    }
+
+    func testBenchmarkScriptRejectsNonArm64Executable() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let script = try copyScript("benchmark.sh", into: fixture.root)
+        let app = try makeFakeBenchmarkApp(in: fixture.root, os: "macOS Fixture")
+        let tools = try makeFakeTools(in: fixture.root, architecture: "x86_64")
+
+        let result = try runScript(
+            at: script,
+            arguments: [app.path],
+            environment: ["PATH": toolPath(tools)]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
+        XCTAssertTrue(result.output.contains("arm64"), result.output)
+    }
+
+    func testBenchmarkScriptRejectsInvalidRuntimeEvidence() throws {
+        let cases: [(device: String, thermal: String, samples: Int?, p95: Double, validKernels: Bool, budgetOverflowsJSON: String, failure: String?)] = [
+            ("Fixture GPU", "nominal", nil, 1, true, "6701", nil),
+            ("Apple M4 Max", "serious", nil, 1, true, "6701", nil),
+            ("Apple M4 Max", "nominal", 899, 1, true, "6701", nil),
+            ("Apple M4 Max", "nominal", nil, 20, true, "6701", nil),
+            ("Apple M4 Max", "nominal", nil, 1, false, "6701", nil),
+            ("Apple M4 Max", "nominal", nil, 1, true, "\"invalid\"", nil),
+            ("Apple M4 Max", "nominal", nil, 1, true, "6701", "GPU fault"),
+        ]
+        for testCase in cases {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let script = try copyScript("benchmark.sh", into: fixture.root)
+            let app = try makeFakeBenchmarkApp(
+                in: fixture.root,
+                os: "macOS Fixture",
+                device: testCase.device,
+                thermal: testCase.thermal,
+                measuredSampleCount: testCase.samples,
+                p95: testCase.p95,
+                validKernels: testCase.validKernels,
+                budgetOverflowsJSON: testCase.budgetOverflowsJSON,
+                failure: testCase.failure
+            )
+            let tools = try makeFakeTools(in: fixture.root)
+
+            let result = try runScript(
+                at: script,
+                arguments: [app.path],
+                environment: ["PATH": toolPath(tools)]
+            )
+
+            XCTAssertNotEqual(result.status, 0, "\(testCase): \(result.output)")
+        }
+    }
+
+    func testBenchmarkScriptRejectsNegativeAndFractionalBudgetOverflow() throws {
+        for budgetOverflowsJSON in ["-1", "1.5"] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let script = try copyScript("benchmark.sh", into: fixture.root)
+            let app = try makeFakeBenchmarkApp(
+                in: fixture.root,
+                os: "macOS Fixture",
+                budgetOverflowsJSON: budgetOverflowsJSON
+            )
+            let tools = try makeFakeTools(in: fixture.root)
+
+            let result = try runScript(
+                at: script,
+                arguments: [app.path],
+                environment: ["PATH": toolPath(tools)]
+            )
+
+            XCTAssertNotEqual(result.status, 0, "budgetOverflows=\(budgetOverflowsJSON): \(result.output)")
+        }
+    }
+
+    func testBenchmarkScriptRejectsStaleOutputWhenExecutableWritesNothing() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let script = try copyScript("benchmark.sh", into: fixture.root)
+        let app = try makeFakeBenchmarkApp(in: fixture.root, os: "macOS Fixture", skipFirstOutput: true)
+        let tools = try makeFakeTools(in: fixture.root)
+        let evidence = fixture.root.appendingPathComponent("dist/evidence", isDirectory: true)
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        try writeJSON(benchmarkReport(size: "1280x800"), to: evidence.appendingPathComponent("benchmark-1280x800-run1.json"))
+
+        let result = try runScript(
+            at: script,
+            arguments: [app.path],
+            environment: ["PATH": toolPath(tools)]
+        )
+
+        XCTAssertNotEqual(result.status, 0, result.output)
     }
 
     private func makeFixture() throws -> (root: URL, evidence: URL, capture: URL) {
@@ -501,17 +1243,34 @@ final class ScriptContractTests: XCTestCase {
         let evidence = root.appendingPathComponent("evidence", isDirectory: true)
         let captures = evidence.appendingPathComponent("captures", isDirectory: true)
         try FileManager.default.createDirectory(at: captures, withIntermediateDirectories: true)
-        let capture = captures.appendingPathComponent("capture.png")
-        try Data("fixture-png".utf8).write(to: capture)
-        let captureHash = sha256(try Data(contentsOf: capture))
 
         for probe in ["shadow", "mixed", "budgets", "sdf", "optics", "volume", "motion", "ui"] {
             try writeJSON(["status": "pass"], to: evidence.appendingPathComponent("\(probe).json"))
         }
+        var entriesByRow = Dictionary(uniqueKeysWithValues: captureRows.map { ($0, [[String: Any]]()) })
+        for spec in captureSpecs {
+            let capture = evidence.appendingPathComponent(spec.path)
+            let report = evidence.appendingPathComponent(spec.reportPath)
+            try Data("fixture-png-\(spec.stem)".utf8).write(to: capture)
+            try writeJSON(qaReport(for: spec, capturePath: capture.path), to: report)
+            entriesByRow[spec.row, default: []].append([
+                "path": spec.path,
+                "sha256": sha256(try Data(contentsOf: capture)),
+                "reportPath": spec.reportPath,
+                "reportSHA256": sha256(try Data(contentsOf: report)),
+                "scene": spec.scene,
+                "featureMask": spec.featureMask,
+                "fixedTime": spec.fixedTime,
+                "view": spec.view,
+                "captureScope": spec.captureScope,
+                "windowPoints": spec.windowPoints,
+                "drawablePixels": [1280, 800],
+            ])
+        }
         let visualRows: [[String: Any]] = captureRows.map { name in
             [
                 "name": name,
-                "captures": [["path": "captures/capture.png", "sha256": captureHash]],
+                "captures": entriesByRow[name]!,
                 "reviewer": "Fixture Reviewer",
                 "reviewedAt": "2026-08-30T00:00:00Z",
                 "status": "pass",
@@ -530,25 +1289,70 @@ final class ScriptContractTests: XCTestCase {
             "status": "pass",
             "tracePath": "trace.gputrace",
             "traceSHA256": sha256(try Data(contentsOf: trace)),
+            "reviewer": "Trace Reviewer",
+            "reviewedAt": "2026-08-30T00:00:00Z",
             "steadyStatePassCount": 2,
             "perFrameCPUTextureUploads": 0,
             "steadyStateWaitUntilCompleted": 0,
         ], to: evidence.appendingPathComponent("trace-review.json"))
         try writeJSON(["status": "pass"], to: evidence.appendingPathComponent("xctest.json"))
-        try writeJSON(["status": "pass", "windowCount": 1], to: evidence.appendingPathComponent("package-verification.json"))
-        return (root, evidence, capture)
+        try writeJSON(["status": "pass", "processCount": 1, "windowCount": 1], to: evidence.appendingPathComponent("package-verification.json"))
+        return (root, evidence, evidence.appendingPathComponent(captureSpecs[0].path))
     }
 
-    private func benchmarkReport(size: String) -> [String: Any] {
+    private var productionKernels: [String] {
+        ["generateTerrain", "reduceOccupancy", "buildMixedOccupancy", "reduceMixedOccupancy", "clearVolumeLighting", "injectVolumeLighting", "raycastHybrid"]
+    }
+
+    private func qaReport(for spec: CaptureSpec, capturePath: String) -> [String: Any] {
+        [
+            "schemaVersion": 1,
+            "status": "pass",
+            "failure": NSNull(),
+            "device": "Fixture GPU",
+            "os": "macOS Fixture",
+            "scene": spec.scene,
+            "fixedTime": spec.fixedTime,
+            "drawablePixels": [1280, 800],
+            "renderScale": 1.0,
+            "windowCount": 1,
+            "productionKernels": productionKernels,
+            "featureMask": spec.featureMask,
+            "passCount": 2,
+            "stepCounters": [String: Int](),
+            "shadowSampleCounts": [String: Int](),
+            "budgetOverflows": 0,
+            "commandErrors": 0,
+            "droppedDrawables": 0,
+            "semaphoreTimeouts": 0,
+            "capturePath": capturePath,
+            "fixedStep": 1.0 / 120.0,
+            "warmupFrames": 0,
+            "measuredFrames": 0,
+            "percentileMethod": "nearest-rank",
+            "gpuMilliseconds": [Double](),
+            "p95GPUms": 0.0,
+            "thermalStateBefore": NSNull(),
+            "thermalStateAfter": NSNull(),
+        ]
+    }
+
+    private func benchmarkReport(size: String, os: String = "macOS Fixture") -> [String: Any] {
         let pixels = size.split(separator: "x").compactMap { Int($0) }
         return [
             "schemaVersion": 1,
             "status": "pass",
+            "failure": NSNull(),
             "device": "Apple M4 Max",
+            "os": os,
+            "scene": "hero",
+            "fixedTime": 0.0,
             "thermalStateBefore": "nominal",
             "thermalStateAfter": "nominal",
             "drawablePixels": pixels,
             "renderScale": 1.0,
+            "windowCount": 1,
+            "productionKernels": productionKernels,
             "fixedStep": 1.0 / 120.0,
             "warmupFrames": 180,
             "measuredFrames": 900,
@@ -560,29 +1364,276 @@ final class ScriptContractTests: XCTestCase {
             "semaphoreTimeouts": 0,
             "passCount": 2,
             "featureMask": "all",
+            "stepCounters": [String: Int](),
+            "shadowSampleCounts": [String: Int](),
+            "budgetOverflows": 0,
+            "capturePath": NSNull(),
         ]
     }
 
-    private func makeFakeQAApp(in root: URL) throws -> URL {
+    private func makeFakeQAApp(
+        in root: URL,
+        skipFirstOutput: Bool = false,
+        validKernels: Bool = true,
+        budgetOverflowsJSON: String = "6701"
+    ) throws -> URL {
         let app = root.appendingPathComponent("Fixture.app", isDirectory: true)
         let executable = app.appendingPathComponent("Contents/MacOS/MicroCubeMetal")
         try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let invocationLog = root.appendingPathComponent("qa-invocations.log")
+        let counter = root.appendingPathComponent("qa-invocation-count")
+        let kernels = validKernels ? productionKernels : ["one", "two", "three", "four", "five", "six", "seven"]
+        let kernelsJSON = String(decoding: try JSONSerialization.data(withJSONObject: kernels), as: UTF8.self)
         let script = #"""
         #!/bin/sh
+        printf '%s\n' "$*" >> "\#(invocationLog.path)"
         while [ "$#" -gt 0 ]; do
             case "$1" in
+                --qa-scene) scene="$2"; shift 2 ;;
+                --qa-features) features="$2"; shift 2 ;;
+                --qa-time) fixed_time="$2"; shift 2 ;;
+                --qa-step) fixed_step="$2"; shift 2 ;;
+                --qa-window-points) window="$2"; shift 2 ;;
+                --qa-drawable) drawable="$2"; shift 2 ;;
+                --qa-view) view="$2"; shift 2 ;;
+                --qa-capture-scope) scope="$2"; shift 2 ;;
                 --qa-capture) capture="$2"; shift 2 ;;
                 --qa-report) report="$2"; shift 2 ;;
                 *) shift ;;
             esac
         done
+        count=0
+        [ -f "\#(counter.path)" ] && count=$(cat "\#(counter.path)")
+        count=$((count + 1))
+        printf '%s' "$count" > "\#(counter.path)"
+        if [ "\#(skipFirstOutput ? "1" : "0")" = 1 ] && [ "$count" = 1 ]; then
+            exit 0
+        fi
         mkdir -p "$(dirname "$capture")" "$(dirname "$report")"
         printf fixture > "$capture"
-        printf '{"schemaVersion":1,"status":"pass","failure":null,"windowCount":1,"passCount":2,"commandErrors":0,"droppedDrawables":0,"semaphoreTimeouts":0,"capturePath":"%s"}\n' "$capture" > "$report"
+        width=${drawable%x*}
+        height=${drawable#*x}
+        jq -n --arg scene "$scene" --arg featureMask "$features" --argjson fixedTime "$fixed_time" --argjson fixedStep "$fixed_step" --argjson drawablePixels "[$width, $height]" --arg capturePath "$capture" --argjson productionKernels '\#(kernelsJSON)' --argjson budgetOverflows '\#(budgetOverflowsJSON)' '{
+            schemaVersion: 1, status: "pass", failure: null, device: "Fixture GPU", os: "macOS Fixture",
+            scene: $scene, fixedTime: $fixedTime, drawablePixels: $drawablePixels, renderScale: 1,
+            windowCount: 1, productionKernels: $productionKernels,
+            featureMask: $featureMask, passCount: 2, stepCounters: {}, shadowSampleCounts: {}, budgetOverflows: $budgetOverflows,
+            commandErrors: 0, droppedDrawables: 0, semaphoreTimeouts: 0, capturePath: $capturePath,
+            fixedStep: $fixedStep, warmupFrames: 0, measuredFrames: 0, percentileMethod: "nearest-rank",
+            gpuMilliseconds: [], p95GPUms: 0, thermalStateBefore: null, thermalStateAfter: null
+        }' > "$report"
         """#
         try Data(script.utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return app
+    }
+
+    private func makeFakeBenchmarkApp(
+        in root: URL,
+        os: String,
+        device: String = "Apple M4 Max",
+        thermal: String = "nominal",
+        measuredSampleCount: Int? = nil,
+        p95: Double = 1,
+        validKernels: Bool = true,
+        budgetOverflowsJSON: String = "6701",
+        failure: String? = nil,
+        skipFirstOutput: Bool = false
+    ) throws -> URL {
+        let app = root.appendingPathComponent("Benchmark.app", isDirectory: true)
+        let executable = app.appendingPathComponent("Contents/MacOS/MicroCubeMetal")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let invocationLog = root.appendingPathComponent("benchmark-invocations.log")
+        let counter = root.appendingPathComponent("benchmark-invocation-count")
+        let measuredFrames = measuredSampleCount.map(String.init) ?? "$samples"
+        let kernels = validKernels ? productionKernels : ["one", "two", "three", "four", "five", "six", "seven"]
+        let kernelsJSON = String(decoding: try JSONSerialization.data(withJSONObject: kernels), as: UTF8.self)
+        let script = #"""
+        #!/bin/sh
+        printf '%s\n' "$*" >> "\#(invocationLog.path)"
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --qa-scene) scene="$2"; shift 2 ;;
+                --qa-features) features="$2"; shift 2 ;;
+                --qa-time) fixed_time="$2"; shift 2 ;;
+                --qa-step) fixed_step="$2"; shift 2 ;;
+                --qa-camera) camera="$2"; shift 2 ;;
+                --qa-window-points) window="$2"; shift 2 ;;
+                --qa-drawable) drawable="$2"; shift 2 ;;
+                --qa-scale) scale="$2"; shift 2 ;;
+                --qa-view) view="$2"; shift 2 ;;
+                --benchmark) benchmark=1; shift ;;
+                --benchmark-warmup) warmup="$2"; shift 2 ;;
+                --benchmark-samples) samples="$2"; shift 2 ;;
+                --qa-report) report="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        count=0
+        [ -f "\#(counter.path)" ] && count=$(cat "\#(counter.path)")
+        count=$((count + 1))
+        printf '%s' "$count" > "\#(counter.path)"
+        if [ "\#(skipFirstOutput ? "1" : "0")" = 1 ] && [ "$count" = 1 ]; then
+            exit 0
+        fi
+        [ "$camera" = reset ] && [ "$window" = "$drawable" ] && [ "$view" = final ] && [ "$benchmark" = 1 ] || exit 3
+        mkdir -p "$(dirname "$report")"
+        width=${drawable%x*}
+        height=${drawable#*x}
+        measured_frames=\#(measuredFrames)
+        jq -n --arg device "\#(device)" --arg os "\#(os)" --arg scene "$scene" --arg featureMask "$features" \
+            --arg thermal "\#(thermal)" --argjson fixedTime "$fixed_time" --argjson fixedStep "$fixed_step" \
+            --argjson drawablePixels "[$width, $height]" --argjson renderScale "$scale" --argjson warmupFrames "$warmup" \
+            --arg failure "\#(failure ?? "")" --argjson measuredFrames "$measured_frames" --argjson p95GPUms "\#(p95)" \
+            --argjson productionKernels '\#(kernelsJSON)' --argjson budgetOverflows '\#(budgetOverflowsJSON)' '{
+            schemaVersion: 1, status: "pass", failure: (if $failure == "" then null else $failure end), device: $device, os: $os,
+            scene: $scene, fixedTime: $fixedTime, drawablePixels: $drawablePixels, renderScale: $renderScale, windowCount: 1,
+            productionKernels: $productionKernels,
+            featureMask: $featureMask, passCount: 2, stepCounters: {}, shadowSampleCounts: {}, budgetOverflows: $budgetOverflows,
+            commandErrors: 0, droppedDrawables: 0, semaphoreTimeouts: 0, capturePath: null,
+            fixedStep: $fixedStep, warmupFrames: $warmupFrames, measuredFrames: $measuredFrames, percentileMethod: "nearest-rank",
+            gpuMilliseconds: [range(0; $measuredFrames) | $p95GPUms], p95GPUms: $p95GPUms,
+            thermalStateBefore: $thermal, thermalStateAfter: $thermal
+        }' > "$report"
+        """#
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return app
+    }
+
+    private func makeValidFakeApp(
+        in root: URL,
+        extraProcess: Bool = false,
+        hang: Bool = false,
+        ignoreTerm: Bool = false,
+        budgetOverflowsJSON: String = "6701"
+    ) throws -> URL {
+        let app = root.appendingPathComponent("Valid.app", isDirectory: true)
+        let executable = app.appendingPathComponent("Contents/MacOS/MicroCubeMetal")
+        let resources = app.appendingPathComponent("Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "CFBundleIdentifier": "com.vseplet.microcube.metal",
+            "LSMinimumSystemVersion": "14.0",
+            "CFBundleExecutable": "MicroCubeMetal",
+        ]
+        let plistData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try plistData.write(to: app.appendingPathComponent("Contents/Info.plist"))
+        try Data("fixture".utf8).write(to: resources.appendingPathComponent("SceneTypes.metal"))
+        try Data("fixture".utf8).write(to: resources.appendingPathComponent("HybridTraversal.metal"))
+        let kernels = productionKernels.map { "kernel void \($0)() {}" }.joined(separator: "\n")
+        try Data(kernels.utf8).write(to: resources.appendingPathComponent("MicroCube.metal"))
+        try FileManager.default.copyItem(
+            at: projectURL.appendingPathComponent("Sources/MicroCubeMetal/Resources/WhyRays.en.txt"),
+            to: resources.appendingPathComponent("WhyRays.en.txt")
+        )
+        let pidFile = root.appendingPathComponent("package-launch.pid")
+        let childPIDFile = root.appendingPathComponent("package-child.pid")
+        let invocationLog = root.appendingPathComponent("package-invocations.log")
+        let script = #"""
+        #!/bin/sh
+        [ "\#(ignoreTerm ? "1" : "0")" = 1 ] && trap '' TERM
+        printf '%s' "$$" > "\#(pidFile.path)"
+        if [ "\#(extraProcess ? "1" : "0")" = 1 ]; then
+            sleep 30 &
+            printf '%s' "$!" > "\#(childPIDFile.path)"
+        fi
+        printf '%s\n' "$*" >> "\#(invocationLog.path)"
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --qa-scene) scene="$2"; shift 2 ;;
+                --qa-features) features="$2"; shift 2 ;;
+                --qa-time) fixed_time="$2"; shift 2 ;;
+                --qa-step) fixed_step="$2"; shift 2 ;;
+                --qa-camera) camera="$2"; shift 2 ;;
+                --qa-window-points) window="$2"; shift 2 ;;
+                --qa-drawable) drawable="$2"; shift 2 ;;
+                --qa-scale) scale="$2"; shift 2 ;;
+                --qa-view) view="$2"; shift 2 ;;
+                --qa-frames) frames="$2"; shift 2 ;;
+                --qa-capture-scope) scope="$2"; shift 2 ;;
+                --qa-report) report="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        mkdir -p "$(dirname "$report")"
+        width=${drawable%x*}
+        height=${drawable#*x}
+        jq -n --arg scene "$scene" --arg featureMask "$features" --argjson fixedTime "$fixed_time" \
+            --argjson fixedStep "$fixed_step" --argjson drawablePixels "[$width, $height]" --argjson renderScale "$scale" '{
+            schemaVersion: 1, status: "pass", failure: null, device: "Fixture GPU", os: "macOS Fixture",
+            scene: $scene, fixedTime: $fixedTime, drawablePixels: $drawablePixels, renderScale: $renderScale,
+            windowCount: 1, productionKernels: ["generateTerrain", "reduceOccupancy", "buildMixedOccupancy", "reduceMixedOccupancy", "clearVolumeLighting", "injectVolumeLighting", "raycastHybrid"],
+            featureMask: $featureMask, passCount: 2, stepCounters: {}, shadowSampleCounts: {}, budgetOverflows: \#(budgetOverflowsJSON),
+            commandErrors: 0, droppedDrawables: 0, semaphoreTimeouts: 0, capturePath: null,
+            fixedStep: $fixedStep, warmupFrames: 0, measuredFrames: 0, percentileMethod: "nearest-rank",
+            gpuMilliseconds: [], p95GPUms: 0, thermalStateBefore: null, thermalStateAfter: null
+        }' > "$report"
+        if [ "\#(hang ? "1" : "0")" = 1 ]; then
+            while :; do sleep 1; done
+        fi
+        sleep 0.2
+        """#
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return app
+    }
+
+    private func makeFakeTools(
+        in root: URL,
+        processMode: FakeProcessMode = .launched,
+        architecture: String = "arm64",
+        occupiedPID: Int32? = nil
+    ) throws -> URL {
+        let tools = root.appendingPathComponent("fake-tools-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+        try writeExecutable("#!/bin/sh\nprintf '%s\\n' '\(architecture)'\n", to: tools.appendingPathComponent("lipo"))
+        try writeExecutable("#!/bin/sh\nexit 0\n", to: tools.appendingPathComponent("codesign"))
+        try writeExecutable("#!/bin/sh\nprintf '%s\\n' 'Apple M4 Max'\n", to: tools.appendingPathComponent("sysctl"))
+        let pidFile = root.appendingPathComponent("package-launch.pid").path
+        let childPIDFile = root.appendingPathComponent("package-child.pid").path
+        let pgrepScript: String
+        switch processMode {
+        case .launched:
+            pgrepScript = "#!/bin/sh\n[ -f '\(pidFile)' ] || exit 1\npid=$(cat '\(pidFile)')\nkill -0 \"$pid\" 2>/dev/null || exit 1\nprintf '%s\\n' \"$pid\"\n"
+        case .multiple:
+            pgrepScript = "#!/bin/sh\n[ -f '\(pidFile)' ] && [ -f '\(childPIDFile)' ] || exit 1\npid=$(cat '\(pidFile)')\nchild=$(cat '\(childPIDFile)')\nkill -0 \"$pid\" 2>/dev/null || exit 1\nprintf '%s\\n%s\\n' \"$pid\" \"$child\"\n"
+        case .unrelated:
+            pgrepScript = "#!/bin/sh\n[ -f '\(childPIDFile)' ] || exit 1\nchild=$(cat '\(childPIDFile)')\nkill -0 \"$child\" 2>/dev/null || exit 1\nprintf '%s\\n' \"$child\"\n"
+        case .zero:
+            pgrepScript = "#!/bin/sh\nexit 1\n"
+        case .occupied:
+            pgrepScript = "#!/bin/sh\nkill -0 '\(occupiedPID ?? 0)' 2>/dev/null || exit 1\nprintf '%s\\n' '\(occupiedPID ?? 0)'\n"
+        case .lingering:
+            pgrepScript = "#!/bin/sh\n[ -f '\(pidFile)' ] || exit 1\npid=$(cat '\(pidFile)')\nif kill -0 \"$pid\" 2>/dev/null; then printf '%s\\n' \"$pid\"; exit 0; fi\n[ -f '\(childPIDFile)' ] || exit 1\nchild=$(cat '\(childPIDFile)')\nkill -0 \"$child\" 2>/dev/null || exit 1\nprintf '%s\\n' \"$child\"\n"
+        }
+        try writeExecutable(pgrepScript, to: tools.appendingPathComponent("pgrep"))
+        return tools
+    }
+
+    private func writeExecutable(_ contents: String, to url: URL) throws {
+        try Data(contents.utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func terminateFixtureChild(in root: URL) {
+        let pidFile = root.appendingPathComponent("package-child.pid")
+        guard let text = try? String(contentsOf: pidFile, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        kill(pid, SIGTERM)
+    }
+
+    private func toolPath(_ tools: URL) -> String {
+        "\(tools.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "")"
+    }
+
+    private func copyScript(_ name: String, into root: URL) throws -> URL {
+        let scripts = root.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        let destination = scripts.appendingPathComponent(name)
+        try FileManager.default.copyItem(at: scriptURL(name), to: destination)
+        return destination
     }
 
     private func runScript(
@@ -590,9 +1641,17 @@ final class ScriptContractTests: XCTestCase {
         arguments: [String],
         environment: [String: String] = [:]
     ) throws -> (status: Int32, output: String) {
+        try runScript(at: scriptURL(name), arguments: arguments, environment: environment)
+    }
+
+    private func runScript(
+        at script: URL,
+        arguments: [String],
+        environment: [String: String] = [:]
+    ) throws -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = [scriptURL(name).path] + arguments
+        process.arguments = [script.path] + arguments
         process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, value in value }
         let output = Pipe()
         process.standardOutput = output
@@ -602,12 +1661,15 @@ final class ScriptContractTests: XCTestCase {
         return (process.terminationStatus, String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
     }
 
-    private func scriptURL(_ name: String) -> URL {
+    private var projectURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("scripts/\(name)")
+    }
+
+    private func scriptURL(_ name: String) -> URL {
+        projectURL.appendingPathComponent("scripts/\(name)")
     }
 
     private func writeJSON(_ object: Any, to url: URL) throws {

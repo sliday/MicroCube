@@ -215,6 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.title = "MicroCube Metal"
         window.minSize = NSSize(width: 800, height: 500)
         window.appearance = NSAppearance(named: .darkAqua)
