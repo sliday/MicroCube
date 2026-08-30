@@ -583,7 +583,7 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
                 continue;
             }
             HybridHit sdfHit;
-            if (traceSDFInstance(origin, direction, t, min(bestT, nodeExit), instance, scene, sdfHit, counts)
+            if (traceSDFInstance(origin, direction, t, bestT, instance, scene, sdfHit, counts)
                 && sdfHit.t < bestT) {
                 bestT = sdfHit.t;
                 bestHit = sdfHit;

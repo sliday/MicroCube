@@ -46,6 +46,14 @@ final class MixedTraversalTests: XCTestCase {
         XCTAssertGreaterThan(report.gaussianSamples, 0)
     }
 
+    func testSDFSurfaceAfterSweptEntryLeafRemainsTraceable() throws {
+        let report = try runMixedProbe()
+
+        XCTAssertEqual(report.crossLeafHit, 1)
+        XCTAssertEqual(report.crossLeafStableID, 10)
+        XCTAssertEqual(report.crossLeafHitDistance, 16.5, accuracy: 0.002)
+    }
+
     func testMixedTraversalStaysInsideFixedBudgets() throws {
         let report = try runMixedProbe()
 
@@ -182,6 +190,16 @@ final class MixedTraversalTests: XCTestCase {
             output[31] = float(emptyCounts.voxelSteps);
             output[32] = float(emptyCounts.sdfSamples);
             output[33] = float(emptyCounts.gaussianSamples);
+            HybridHit crossLeafHit;
+            TraceCounts crossLeafCounts = {};
+            bool crossLeafFound = traceMixedScene(
+                voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                float3(232.5f, 40.5f, 40.5f), float3(1.0f, 0.0f, 0.0f), 32.0f,
+                crossLeafHit, crossLeafCounts
+            );
+            output[34] = crossLeafFound ? 1.0f : 0.0f;
+            output[35] = float(crossLeafHit.stableID);
+            output[36] = crossLeafHit.t;
         }
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: probeSource)
@@ -209,7 +227,7 @@ final class MixedTraversalTests: XCTestCase {
             bytesPerRow: 1,
             bytesPerImage: 1
         )
-        let output = try XCTUnwrap(device.makeBuffer(length: 34 * MemoryLayout<Float>.stride, options: .storageModeShared))
+        let output = try XCTUnwrap(device.makeBuffer(length: 37 * MemoryLayout<Float>.stride, options: .storageModeShared))
         let headers = try makeBuffer(device: device, values: scene.cellHeaders)
         let sdfRefs = try makeBuffer(device: device, values: scene.cellSDFRefs)
         let gaussianRefs = try makeBuffer(device: device, values: scene.cellGaussianRefs)
@@ -256,16 +274,16 @@ final class MixedTraversalTests: XCTestCase {
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
 
-        let pointer = output.contents().bindMemory(to: Float.self, capacity: 34)
-        let values = Array(UnsafeBufferPointer(start: pointer, count: 34))
+        let pointer = output.contents().bindMemory(to: Float.self, capacity: 37)
+        let values = Array(UnsafeBufferPointer(start: pointer, count: 37))
         return Report(values: values)
     }
 
     private func makeFixtureScene() throws -> SceneData {
         func sphere(centerX: Float, centerY: Float = 17.5, centerZ: Float = 25.5,
-                    kind: UInt32, stableID: UInt32) -> SDFInstance {
+                    sweptHalfWidth: Float = 0.5, kind: UInt32, stableID: UInt32) -> SDFInstance {
             SDFInstance(
-                sweptBoundsMin: SIMD4<Float>(centerX - 0.5, centerY - 0.5, centerZ - 0.5, 0),
+                sweptBoundsMin: SIMD4<Float>(centerX - sweptHalfWidth, centerY - 0.5, centerZ - 0.5, 0),
                 sweptBoundsMax: SIMD4<Float>(centerX + 0.5, centerY + 0.5, centerZ + 0.5, 0),
                 positionScale: SIMD4<Float>(centerX, centerY, centerZ, 0.5),
                 rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
@@ -294,6 +312,8 @@ final class MixedTraversalTests: XCTestCase {
                 sphere(centerX: 9.5, kind: 0, stableID: 3),
                 sphere(centerX: 11.5, kind: 4, stableID: 8),
                 sphere(centerX: 145.5, centerY: 40.5, centerZ: 40.5, kind: 0, stableID: 9),
+                sphere(centerX: 249.5, centerY: 40.5, centerZ: 40.5,
+                       sweptHalfWidth: 9.5, kind: 0, stableID: 10),
             ],
             gaussians: [gaussian, isolatedGaussian],
             lights: [],
@@ -376,6 +396,9 @@ private struct Report {
     let gaussianOnly: TraversalStepMetrics
     let mixed: TraversalStepMetrics
     let empty: TraversalStepMetrics
+    let crossLeafHit: Int
+    let crossLeafStableID: Int
+    let crossLeafHitDistance: Float
 
     init(values: [Float]) {
         mixedLeafVoxel = Int(values[0])
@@ -402,5 +425,8 @@ private struct Report {
         gaussianOnly = TraversalStepMetrics(voxelSteps: Int(values[25]), sdfSteps: Int(values[26]), gaussianSamples: Int(values[27]))
         mixed = TraversalStepMetrics(voxelSteps: Int(values[28]), sdfSteps: Int(values[29]), gaussianSamples: Int(values[30]))
         empty = TraversalStepMetrics(voxelSteps: Int(values[31]), sdfSteps: Int(values[32]), gaussianSamples: Int(values[33]))
+        crossLeafHit = Int(values[34])
+        crossLeafStableID = Int(values[35])
+        crossLeafHitDistance = values[36]
     }
 }
