@@ -162,6 +162,43 @@ final class UIStateTests: XCTestCase {
         XCTAssertTrue(hud.text.contains("MOTION HELD · CAMERA LIVE"))
     }
 
+    func testProductionHUDLabelCanDisplayMaximumSixLineHUDState() {
+        var state = RenderState()
+        state.apply(.evidence(.steps))
+        state.apply(.togglePause)
+        let hud = HUDState(
+            renderState: state,
+            framesPerSecond: 60,
+            gpuMilliseconds: 8,
+            drawableWidth: 896,
+            drawableHeight: 560,
+            renderScale: 0.70,
+            counters: FrameCounters(
+                macroSkips: 1,
+                macroDescents: 2,
+                voxelSteps: 3,
+                sdfSamples: 4,
+                gaussianSamples: 5,
+                secondaryRays: 1,
+                surfaceSunShadows: 1,
+                surfaceLocalShadows: 1,
+                volumeSunShadows: 1,
+                volumeLocalShadows: 1,
+                budgetOverflows: 0,
+                reserved: 0
+            )
+        )
+        let lineCount = hud.text.split(separator: "\n").count
+        let label = makeHUDStatusLabel(text: hud.text)
+
+        XCTAssertEqual(lineCount, 6)
+        XCTAssertEqual(label.stringValue, hud.text)
+        XCTAssertTrue(
+            label.maximumNumberOfLines == 0 || label.maximumNumberOfLines >= lineCount,
+            "Production HUD label caps a six-line state at \(label.maximumNumberOfLines) lines"
+        )
+    }
+
     func testPauseTransitionsUseInjectableAccessibilityAnnouncements() {
         let delegate = AppDelegate()
         var announcements = [String]()

@@ -19,6 +19,16 @@ private final class RendererShortcutWindow: NSWindow {
     }
 }
 
+func makeHUDStatusLabel(text: String) -> NSTextField {
+    let label = NSTextField(labelWithString: text)
+    label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+    label.textColor = .white
+    label.maximumNumberOfLines = 0
+    label.lineBreakMode = .byWordWrapping
+    label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    return label
+}
+
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let input = InputState()
@@ -206,12 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.layer?.masksToBounds = true
         self.hudOverlay = overlay
 
-        let hudLabel = NSTextField(labelWithString: "Starting Metal renderer...")
-        hudLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
-        hudLabel.textColor = .white
-        hudLabel.maximumNumberOfLines = 4
-        hudLabel.lineBreakMode = .byWordWrapping
-        hudLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let hudLabel = makeHUDStatusLabel(text: "Starting Metal renderer...")
         self.hudLabel = hudLabel
 
         let controlsLabel = NSTextField(
