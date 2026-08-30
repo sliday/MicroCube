@@ -90,6 +90,16 @@ final class VolumeProbeTests: XCTestCase {
         XCTAssertLessThan(blocked.w / clear.w, 0.35)
     }
 
+    func testVolumeLightingUsesCalibratedLocalLightContribution() throws {
+        let baseline = try runVolumeLighting(blocked: false, localLightIntensity: 0)
+        let illuminated = try runVolumeLighting(blocked: false, localLightIntensity: 1)
+        let expectedContribution: Float = 0.22 * 0.725 * 0.999 * 0.999
+
+        XCTAssertEqual(illuminated.x - baseline.x, expectedContribution, accuracy: 0.002)
+        XCTAssertEqual(illuminated.y, baseline.y, accuracy: 0.002)
+        XCTAssertEqual(illuminated.z, baseline.z, accuracy: 0.002)
+    }
+
     private func runMathProbe() throws -> [Float] {
         let source = """
         kernel void probeVolumeMath(device float *output [[buffer(0)]], uint gid [[thread_position_in_grid]]) {
@@ -255,7 +265,7 @@ final class VolumeProbeTests: XCTestCase {
         return Array(UnsafeBufferPointer(start: pointer, count: count))
     }
 
-    private func runVolumeLighting(blocked: Bool) throws -> SIMD4<Float> {
+    private func runVolumeLighting(blocked: Bool, localLightIntensity: Float? = nil) throws -> SIMD4<Float> {
         let (device, library) = try MetalProbeHarness.makeLibrary()
         let reduce = try MetalProbeHarness.makePipeline(name: "reduceOccupancy", library: library, device: device)
         let inject = try MetalProbeHarness.makePipeline(name: "injectVolumeLighting", library: library, device: device)
@@ -292,7 +302,11 @@ final class VolumeProbeTests: XCTestCase {
         var activeCell = SceneData.linearIndex(x: 10, y: 10, z: 10)
         let activeCells = try XCTUnwrap(device.makeBuffer(bytes: &activeCell, length: MemoryLayout<UInt32>.stride))
         let gaussians = try XCTUnwrap(device.makeBuffer(length: MemoryLayout<Gaussian>.stride))
-        let lights = try XCTUnwrap(device.makeBuffer(length: MemoryLayout<Light>.stride))
+        var light = Light(
+            positionRadius: SIMD4<Float>(84, 84, 82.5, 10),
+            colorIntensity: SIMD4<Float>(1, 0, 0, localLightIntensity ?? 0)
+        )
+        let lights = try XCTUnwrap(device.makeBuffer(bytes: &light, length: MemoryLayout<Light>.stride))
         let queue = try XCTUnwrap(device.makeCommandQueue())
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
         for level in 1..<10 {
@@ -324,11 +338,18 @@ final class VolumeProbeTests: XCTestCase {
             cameraRightAndAspect: .zero,
             cameraUpAndMaxDistance: .zero,
             sunDirectionAndAmbient: SIMD4<Float>(1, 0, 0, 0),
-            viewportAndOptions: .zero,
+            viewportAndOptions: SIMD4<UInt32>(
+                0,
+                0,
+                0,
+                localLightIntensity == nil
+                    ? 0
+                    : RenderFeatures.lights.rawValue | RenderFeatures.gaussian.rawValue | (1 << 31)
+            ),
             fogAndExposure: .zero
         )
         var scene = SceneUniforms(
-            counts: .zero,
+            counts: SIMD4<UInt32>(0, 0, localLightIntensity == nil ? 0 : 1, 0),
             grid: SIMD4<UInt32>(64, 8, 6, 1),
             fog: .zero,
             budgets: SIMD4<UInt32>(24, 32, 48, 8)

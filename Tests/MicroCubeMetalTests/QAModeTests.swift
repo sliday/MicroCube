@@ -375,6 +375,17 @@ final class QAModeTests: XCTestCase {
         XCTAssertFalse(plan.isFinal(frame: 1_078))
     }
 
+    func testBothCaptureScopesRequestTheFinalDrawable() {
+        for scope in [QAMode.CaptureScope.drawable, .window] {
+            var mode = QAMode()
+            mode.captureScope = scope
+            mode.capturePath = "/tmp/capture.png"
+            let plan = QARenderPlan(mode: mode)
+
+            XCTAssertTrue(plan.capturesDrawable(frame: 0))
+        }
+    }
+
     func testDrawableCaptureWritesDecodablePNG() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -397,6 +408,21 @@ final class QAModeTests: XCTestCase {
         XCTAssertGreaterThan(color.redComponent, 0.95)
         XCTAssertGreaterThan(color.redComponent - color.greenComponent, 0.75)
         XCTAssertLessThan(color.blueComponent, 0.01)
+    }
+
+    func testDrawableCaptureCreatesReusableCGImage() throws {
+        let capture = QADrawableCapture(
+            width: 1,
+            height: 1,
+            bytesPerRow: 4,
+            bgra8: Data([0, 255, 0, 255])
+        )
+
+        let image = try capture.makeCGImage(path: "memory")
+
+        XCTAssertEqual(image.width, 1)
+        XCTAssertEqual(image.height, 1)
+        XCTAssertEqual(image.bytesPerRow, 4)
     }
 
     func testQASceneSelectionBuildsTheRequestedDeterministicFixture() throws {

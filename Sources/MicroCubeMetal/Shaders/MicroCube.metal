@@ -308,7 +308,7 @@ kernel void injectVolumeLighting(
         }
         float falloff = 1.0f - distance / light.positionRadius.w;
         radiance += light.colorIntensity.xyz * light.colorIntensity.w
-            * falloff * falloff * visibility * 0.16f;
+            * falloff * falloff * visibility * 0.22f;
     }
     if ((options & COUNTER_AGGREGATION) != 0u) {
         uint sunSum = simd_sum(inRange && gaussianEnabled ? volumeSunShadow : 0u);

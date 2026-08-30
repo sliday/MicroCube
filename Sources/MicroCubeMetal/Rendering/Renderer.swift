@@ -547,9 +547,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         var captureBuffer: MTLBuffer?
         var captureBytesPerRow = 0
         if let (plan, frame) = qaFrame,
-           plan.isFinal(frame: frame),
-           plan.mode.captureScope == .drawable,
-           plan.mode.capturePath != nil {
+           plan.capturesDrawable(frame: frame) {
             captureBytesPerRow = (width * 4 + 255) & ~255
             guard let buffer = commandQueue.device.makeBuffer(
                 length: captureBytesPerRow * height,
@@ -1030,9 +1028,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             cameraForwardAndFOV: SIMD4<Float>(forward.x, forward.y, forward.z, halfFOV),
             cameraRightAndAspect: SIMD4<Float>(right.x, right.y, right.z, aspect),
             cameraUpAndMaxDistance: SIMD4<Float>(up.x, up.y, up.z, 256.0),
-            sunDirectionAndAmbient: SIMD4<Float>(sun.x, sun.y, sun.z, 0.42),
+            sunDirectionAndAmbient: SIMD4<Float>(sun.x, sun.y, sun.z, 0.24),
             viewportAndOptions: SIMD4<UInt32>(UInt32(width), UInt32(height), frameIndex, options),
-            fogAndExposure: SIMD4<Float>(0.83, 1.0, 1.0, Float(scaleController.scale))
+            fogAndExposure: SIMD4<Float>(0.83, 1.0, 0.82, Float(scaleController.scale))
         )
     }
 

@@ -62,6 +62,40 @@ func postAccessibilityAnnouncement(_ announcement: String) {
     )
 }
 
+func writeQAWindowCapture(
+    contentView: NSView,
+    metalView: NSView,
+    drawableCapture: QADrawableCapture,
+    to path: String
+) throws {
+    let image = try drawableCapture.makeCGImage(path: path)
+    let imageView = NSImageView(frame: metalView.frame)
+    imageView.image = NSImage(cgImage: image, size: metalView.bounds.size)
+    imageView.imageScaling = .scaleAxesIndependently
+    imageView.autoresizingMask = metalView.autoresizingMask
+    contentView.addSubview(imageView, positioned: .above, relativeTo: metalView)
+    defer { imageView.removeFromSuperview() }
+    contentView.layoutSubtreeIfNeeded()
+    contentView.displayIfNeeded()
+    guard let bitmap = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds) else {
+        throw QAError.writeFailed(path: path, diagnostic: "AppKit could not allocate a window bitmap")
+    }
+    contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
+    guard let data = bitmap.representation(using: .png, properties: [:]) else {
+        throw QAError.writeFailed(path: path, diagnostic: "AppKit PNG encoding failed")
+    }
+    let url = URL(fileURLWithPath: path)
+    do {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+    } catch {
+        throw QAError.writeFailed(path: path, diagnostic: error.localizedDescription)
+    }
+}
+
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let input = InputState()
@@ -356,6 +390,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let qaMode {
             renderState.features = qaMode.features
             renderState.paused = true
+            if qaMode.captureScope == .window,
+               case .expanded = ExplainerLayout.state(windowWidth: CGFloat(qaMode.windowPoints.x)) {
+                renderState.explainerVisible = true
+            }
+            explainerPanel?.apply(renderState: renderState)
+            updateExplainerLayout()
         }
         setRendererState()
         switch autoTourPolicy {
@@ -718,17 +758,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         var failure = result.failure
         if failure == nil, let capturePath = qaMode.capturePath {
             do {
+                guard let capture = result.drawableCapture else {
+                    throw QAError.writeFailed(
+                        path: capturePath,
+                        diagnostic: "renderer did not return the completed drawable"
+                    )
+                }
                 switch qaMode.captureScope {
                 case .drawable:
-                    guard let capture = result.drawableCapture else {
-                        throw QAError.writeFailed(
-                            path: capturePath,
-                            diagnostic: "renderer did not return the completed drawable"
-                        )
-                    }
                     try capture.writePNG(to: capturePath)
                 case .window:
-                    try writeWindowCapture(to: capturePath)
+                    try writeWindowCapture(to: capturePath, drawableCapture: capture)
                 }
             } catch {
                 failure = error.localizedDescription
@@ -809,29 +849,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         finishAutomation(status: failure == nil ? 0 : 1)
     }
 
-    private func writeWindowCapture(to path: String) throws {
-        guard let contentView = window?.contentView else {
-            throw QAError.writeFailed(path: path, diagnostic: "the existing window has no content view")
+    private func writeWindowCapture(to path: String, drawableCapture: QADrawableCapture) throws {
+        guard let contentView = window?.contentView, let metalView else {
+            throw QAError.writeFailed(path: path, diagnostic: "the existing window has no Metal content view")
         }
-        contentView.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
-        guard let bitmap = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds) else {
-            throw QAError.writeFailed(path: path, diagnostic: "AppKit could not allocate a window bitmap")
-        }
-        contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
-        guard let data = bitmap.representation(using: .png, properties: [:]) else {
-            throw QAError.writeFailed(path: path, diagnostic: "AppKit PNG encoding failed")
-        }
-        let url = URL(fileURLWithPath: path)
-        do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: url, options: .atomic)
-        } catch {
-            throw QAError.writeFailed(path: path, diagnostic: error.localizedDescription)
-        }
+        try writeQAWindowCapture(
+            contentView: contentView,
+            metalView: metalView,
+            drawableCapture: drawableCapture,
+            to: path
+        )
     }
 
     private func finishAutomation(status: Int32) {

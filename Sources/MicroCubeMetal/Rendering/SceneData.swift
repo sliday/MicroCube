@@ -93,11 +93,11 @@ struct SceneData {
             return Light(
                 positionRadius: SIMD4<Float>(
                     creature.positionScale.x,
-                    creature.positionScale.y + 10.8,
+                    creature.positionScale.y + 6.3,
                     creature.positionScale.z,
-                    33
+                    26
                 ),
-                colorIntensity: SIMD4<Float>(color.x, color.y, color.z, 10)
+                colorIntensity: SIMD4<Float>(color.x, color.y, color.z, 14)
             )
         }
         let gaussians = (0..<8).map { index -> Gaussian in
@@ -138,8 +138,8 @@ struct SceneData {
                 transmissionAcoustic: .zero
             ),
             Material(
-                baseColorRoughness: SIMD4<Float>(0.12, 0.11, 0.10, 0.46),
-                emissionMetalness: SIMD4<Float>(0.35, 0.05, 0.02, 0),
+                baseColorRoughness: SIMD4<Float>(0.10, 0.085, 0.075, 0.58),
+                emissionMetalness: SIMD4<Float>(0.025, 0.006, 0.003, 0),
                 opticalAbsorptionIOR: SIMD4<Float>(0, 0, 0, 1),
                 transmissionAcoustic: .zero
             ),

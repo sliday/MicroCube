@@ -46,10 +46,52 @@ inline float distanceToInstance(float3 point,
     switch (instance.metadata.x) {
         case 1u: {
             float height = max(instance.parameters.x, scale * 2.0f);
-            float body = sdCapsule(local, float3(0.0f, -height * 0.5f, 0.0f),
-                                  float3(0.0f, height * 0.5f, 0.0f), scale * 0.32f);
-            float head = sdSphere(local - float3(0.0f, height * 0.55f, 0.0f), scale * 0.48f);
-            return smoothUnion(body, head, scale * 0.22f);
+            float gait = instance.parameters.z;
+            float footY = -height * 0.5f - scale * 0.32f + scale * 0.17f;
+            float legX = scale * 0.25f;
+            float torso = sdCapsule(local, float3(0.0f, -height * 0.20f, 0.0f),
+                                   float3(0.0f, height * 0.24f, 0.0f), scale * 0.30f);
+            float head = sdSphere(local - float3(0.0f, height * 0.38f, 0.0f), scale * 0.46f);
+            float leftLeg = sdCapsule(
+                local,
+                float3(-legX, -height * 0.18f, -gait * scale * 0.25f),
+                float3(-legX, footY, gait * scale * 0.55f),
+                scale * 0.17f
+            );
+            float rightLeg = sdCapsule(
+                local,
+                float3(legX, -height * 0.18f, gait * scale * 0.25f),
+                float3(legX, footY, -gait * scale * 0.55f),
+                scale * 0.17f
+            );
+            float leftArm = sdCapsule(
+                local,
+                float3(-scale * 0.22f, height * 0.14f, 0.0f),
+                float3(-scale * 0.75f, -height * 0.06f, -gait * scale * 0.42f),
+                scale * 0.13f
+            );
+            float rightArm = sdCapsule(
+                local,
+                float3(scale * 0.22f, height * 0.14f, 0.0f),
+                float3(scale * 0.75f, -height * 0.06f, gait * scale * 0.42f),
+                scale * 0.13f
+            );
+            float leftHorn = sdCapsule(
+                local,
+                float3(-scale * 0.20f, height * 0.47f, 0.0f),
+                float3(-scale * 0.38f, height * 0.69f, 0.0f),
+                scale * 0.08f
+            );
+            float rightHorn = sdCapsule(
+                local,
+                float3(scale * 0.20f, height * 0.47f, 0.0f),
+                float3(scale * 0.38f, height * 0.69f, 0.0f),
+                scale * 0.08f
+            );
+            float creature = smoothUnion(torso, head, scale * 0.18f);
+            creature = min(creature, min(leftLeg, rightLeg));
+            creature = smoothUnion(creature, min(leftArm, rightArm), scale * 0.08f);
+            return min(creature, min(leftHorn, rightHorn));
         }
         case 3u:
             return fractalDistance(local / scale, fractalIterations) * scale;
@@ -86,6 +128,8 @@ inline SDFInstance animateSDFInstance(thread const SDFInstance &source, float ti
         instance.positionScale.x += sin(phase) * 2.2f;
         instance.positionScale.y += abs(sin(phase * 1.7f)) * 0.22f;
         instance.positionScale.z += cos(phase * 0.73f) * 1.5f;
+        instance.parameters.z = sin(phase * 2.0f);
+        instance.parameters.w = cos(phase * 2.0f);
         instance.rotationQuaternion = float4(0.0f, sin(phase * 0.5f) * 0.12f, 0.0f,
                                               cos(phase * 0.5f) * 0.12f + 0.9928f);
     }
@@ -98,7 +142,7 @@ inline Light animateLight(thread const Light &source, uint index, float time) {
     light.positionRadius.x += sin(phase) * 2.2f;
     light.positionRadius.y += abs(sin(phase * 1.7f)) * 0.22f;
     light.positionRadius.z += cos(phase * 0.73f) * 1.5f;
-    light.colorIntensity.w *= 0.72f + 0.28f * (0.5f + 0.5f * sin(time * 2.4f + float(index) * 1.37f));
+    light.colorIntensity.w *= 0.45f + 0.55f * (0.5f + 0.5f * sin(time * 2.4f + float(index) * 1.37f));
     return light;
 }
 

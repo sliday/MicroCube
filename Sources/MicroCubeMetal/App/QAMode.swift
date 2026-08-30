@@ -364,6 +364,10 @@ struct QARenderPlan {
     func isFinal(frame: Int) -> Bool {
         frame == frameCount - 1
     }
+
+    func capturesDrawable(frame: Int) -> Bool {
+        isFinal(frame: frame) && mode.capturePath != nil
+    }
 }
 
 struct QADrawableCapture {
@@ -372,7 +376,7 @@ struct QADrawableCapture {
     let bytesPerRow: Int
     let bgra8: Data
 
-    func writePNG(to path: String) throws {
+    func makeCGImage(path: String) throws -> CGImage {
         guard width > 0, height > 0, bytesPerRow >= width * 4,
               bgra8.count >= bytesPerRow * height else {
             throw QAError.writeFailed(path: path, diagnostic: "invalid BGRA capture dimensions")
@@ -394,6 +398,11 @@ struct QADrawableCapture {
               ) else {
             throw QAError.writeFailed(path: path, diagnostic: "could not create a CGImage")
         }
+        return image
+    }
+
+    func writePNG(to path: String) throws {
+        let image = try makeCGImage(path: path)
         let url = URL(fileURLWithPath: path)
         do {
             try FileManager.default.createDirectory(

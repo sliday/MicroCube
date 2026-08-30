@@ -3,6 +3,25 @@ import Metal
 import XCTest
 @testable import MicroCubeMetal
 
+private final class CaptureColorView: NSView {
+    let color: NSColor
+
+    init(frame: NSRect, color: NSColor) {
+        self.color = color
+        super.init(frame: frame)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        color.setFill()
+        bounds.fill()
+    }
+}
+
 final class UIStateTests: XCTestCase {
     func testPanelTabLoopIncludesCloseEvidenceFeaturesAndNativeLinks() {
         let panel = ExplainerPanel(copy: "Quoted copy", actionHandler: { _ in })
@@ -190,6 +209,91 @@ final class UIStateTests: XCTestCase {
         delegate.handleRenderAction(.escape)
 
         XCTAssertTrue(window.firstResponder === metalView)
+    }
+
+    func testQAExpandedWindowCaptureOpensExplainerPanel() throws {
+        var mode = QAMode()
+        mode.captureScope = .window
+        mode.windowPoints = SIMD2(1280, 800)
+        let delegate = AppDelegate(qaMode: mode)
+        delegate.configureWindow()
+        let window = try XCTUnwrap(delegate.window)
+        defer { window.close() }
+
+        XCTAssertTrue(delegate.renderState.explainerVisible)
+        XCTAssertFalse(try XCTUnwrap(delegate.explainerPanel).isHidden)
+        XCTAssertTrue(try XCTUnwrap(delegate.explainerRail).isHidden)
+    }
+
+    func testQACollapsedWindowCaptureRetainsExplainerRail() throws {
+        var mode = QAMode()
+        mode.captureScope = .window
+        mode.windowPoints = SIMD2(1099, 800)
+        let delegate = AppDelegate(qaMode: mode)
+        delegate.configureWindow()
+        let window = try XCTUnwrap(delegate.window)
+        defer { window.close() }
+
+        XCTAssertFalse(delegate.renderState.explainerVisible)
+        XCTAssertTrue(try XCTUnwrap(delegate.explainerPanel).isHidden)
+        XCTAssertFalse(try XCTUnwrap(delegate.explainerRail).isHidden)
+    }
+
+    func testWindowCaptureComposesDrawableBeneathAppKitOverlays() throws {
+        let bounds = NSRect(x: 0, y: 0, width: 8, height: 8)
+        let contentView = CaptureColorView(frame: bounds, color: .black)
+        let metalView = CaptureColorView(frame: bounds, color: .black)
+        let overlay = CaptureColorView(
+            frame: NSRect(x: 0, y: 0, width: 4, height: 4),
+            color: .blue
+        )
+        contentView.addSubview(metalView)
+        contentView.addSubview(overlay, positioned: .above, relativeTo: metalView)
+        let baseline = try XCTUnwrap(contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds))
+        contentView.cacheDisplay(in: contentView.bounds, to: baseline)
+        let baselineOutside = try XCTUnwrap(baseline.colorAt(
+            x: baseline.pixelsWide - 2,
+            y: baseline.pixelsHigh - 2
+        )?.usingColorSpace(.deviceRGB))
+        let baselineOverlay = try XCTUnwrap(baseline.colorAt(
+            x: 1,
+            y: baseline.pixelsHigh - 2
+        )?.usingColorSpace(.deviceRGB))
+        XCTAssertLessThan(baselineOutside.blueComponent, 0.05)
+        XCTAssertGreaterThan(baselineOverlay.blueComponent, 0.9)
+        let capture = QADrawableCapture(
+            width: 8,
+            height: 8,
+            bytesPerRow: 32,
+            bgra8: Data(Array(repeating: [0, 0, 255, 255], count: 64).joined())
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("window.png").path
+
+        try writeQAWindowCapture(
+            contentView: contentView,
+            metalView: metalView,
+            drawableCapture: capture,
+            to: path
+        )
+
+        let image = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: URL(fileURLWithPath: path))))
+        let drawableColor = try XCTUnwrap(image.colorAt(
+            x: image.pixelsWide - 2,
+            y: image.pixelsHigh - 2
+        )?.usingColorSpace(.deviceRGB))
+        let overlayColor = try XCTUnwrap(image.colorAt(
+            x: 1,
+            y: image.pixelsHigh - 2
+        )?.usingColorSpace(.deviceRGB))
+        XCTAssertGreaterThan(drawableColor.redComponent, 0.9)
+        XCTAssertLessThan(drawableColor.blueComponent, 0.05)
+        XCTAssertGreaterThan(overlayColor.blueComponent, 0.9)
+        XCTAssertLessThan(overlayColor.redComponent, 0.05)
+        XCTAssertEqual(contentView.subviews.count, 2)
     }
 
     func testProductionActionsKeepOpenPanelControlsInSyncWithRenderState() throws {

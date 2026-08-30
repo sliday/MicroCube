@@ -31,6 +31,27 @@ final class SceneDataTests: XCTestCase {
         XCTAssertEqual(scene.lights.count, 6)
     }
 
+    func testHeroCreaturesUseDarkNeutralMaterialAndTighterBrighterLights() throws {
+        let scene = try SceneData.makeHero()
+        let creatures = scene.sdfInstances.filter { $0.metadata.x == 1 }
+        let material = scene.materials[Int(try XCTUnwrap(creatures.first).metadata.y)]
+        let baseColor = SIMD3<Float>(material.baseColorRoughness.x, material.baseColorRoughness.y, material.baseColorRoughness.z)
+        let emission = SIMD3<Float>(material.emissionMetalness.x, material.emissionMetalness.y, material.emissionMetalness.z)
+        let colorRange = max(baseColor.x, max(baseColor.y, baseColor.z))
+            - min(baseColor.x, min(baseColor.y, baseColor.z))
+
+        XCTAssertEqual(Set(creatures.map(\.metadata.y)).count, 1)
+        XCTAssertLessThan(simd_length(emission), 0.05)
+        XCTAssertLessThan(colorRange, 0.04)
+        for (creature, light) in zip(creatures, scene.lights) {
+            XCTAssertGreaterThanOrEqual(light.positionRadius.y - creature.positionScale.y, 5)
+            XCTAssertLessThanOrEqual(light.positionRadius.y - creature.positionScale.y, 7.5)
+            XCTAssertGreaterThanOrEqual(light.positionRadius.w, 20)
+            XCTAssertLessThanOrEqual(light.positionRadius.w, 28)
+            XCTAssertGreaterThanOrEqual(light.colorIntensity.w, 14)
+        }
+    }
+
     func testHeroPresentationScaleKeepsCreaturesGroundedAndAttachedLightsAligned() throws {
         let scene = try SceneData.makeHero()
         let anchor = SIMD3<Float>(288, 102, 302)
@@ -59,9 +80,9 @@ final class SceneDataTests: XCTestCase {
             XCTAssertEqual(creature.positionScale.w, 4.5, accuracy: 0.0001)
             XCTAssertEqual(creature.parameters.x, 18, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.x, creature.positionScale.x, accuracy: 0.0001)
-            XCTAssertEqual(light.positionRadius.y - creature.positionScale.y, 10.8, accuracy: 0.0001)
+            XCTAssertEqual(light.positionRadius.y - creature.positionScale.y, 6.3, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.z, creature.positionScale.z, accuracy: 0.0001)
-            XCTAssertEqual(light.positionRadius.w, 33, accuracy: 0.0001)
+            XCTAssertEqual(light.positionRadius.w, 26, accuracy: 0.0001)
         }
 
         XCTAssertLessThanOrEqual(scene.sdfInstances.count, 16)
@@ -215,6 +236,71 @@ final class SceneDataTests: XCTestCase {
             XCTAssertEqual(heights[index], expectedTerrainHeights[index], accuracy: 0.0001)
             XCTAssertEqual(lowerExtent, heights[index], accuracy: 1, "creature \(index) terrain \(heights[index])")
         }
+    }
+
+    func testHeroCreatureSDFHasSeparatedLimbsHornsAndAnimatedGait() throws {
+        let source = """
+        kernel void probeHeroCreatureShape(
+            device const SDFInstance *sdfs [[buffer(0)]],
+            device float *distances [[buffer(1)]],
+            uint gid [[thread_position_in_grid]]) {
+            if (gid != 0u) return;
+            SDFInstance source = sdfs[0];
+            SDFInstance first = animateSDFInstance(source, 0.0f);
+            SDFInstance second = animateSDFInstance(source, 1.0f);
+            float scale = first.positionScale.w;
+            float height = first.parameters.x;
+            float legX = scale * 0.25f;
+            float footY = -height * 0.5f - scale * 0.32f + scale * 0.17f;
+            distances[0] = distanceToInstance(first.positionScale.xyz + float3(-legX, footY, 0.0f), first, 8u);
+            distances[1] = distanceToInstance(first.positionScale.xyz + float3(legX, footY, 0.0f), first, 8u);
+            distances[2] = distanceToInstance(first.positionScale.xyz + float3(0.0f, footY, 0.0f), first, 8u);
+            distances[3] = distanceToInstance(first.positionScale.xyz + float3(scale * 0.72f, -0.2f, 0.0f), first, 8u);
+            distances[4] = distanceToInstance(first.positionScale.xyz + float3(scale * 0.38f, height * 0.67f, 0.0f), first, 8u);
+            float3 gaitSample = float3(-legX, footY, 0.0f);
+            float firstGait = distanceToInstance(first.positionScale.xyz + gaitSample, first, 8u);
+            float secondGait = distanceToInstance(second.positionScale.xyz + gaitSample, second, 8u);
+            distances[5] = abs(firstGait - secondGait);
+        }
+        """
+        let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
+        let pipeline = try MetalProbeHarness.makePipeline(
+            name: "probeHeroCreatureShape",
+            library: library,
+            device: device
+        )
+        let scene = try SceneData.makeHero()
+        var creature = try XCTUnwrap(scene.sdfInstances.first { $0.metadata.x == 1 })
+        let creatureBuffer = try XCTUnwrap(device.makeBuffer(
+            bytes: &creature,
+            length: MemoryLayout<SDFInstance>.stride,
+            options: .storageModeShared
+        ))
+        let output = try XCTUnwrap(device.makeBuffer(
+            length: 6 * MemoryLayout<Float>.stride,
+            options: .storageModeShared
+        ))
+        let commandBuffer = try XCTUnwrap(try XCTUnwrap(device.makeCommandQueue()).makeCommandBuffer())
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(creatureBuffer, offset: 0, index: 0)
+        encoder.setBuffer(output, offset: 0, index: 1)
+        encoder.dispatchThreads(
+            MTLSize(width: 1, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
+
+        let distances = output.contents().bindMemory(to: Float.self, capacity: 6)
+        XCTAssertLessThan(distances[0], 0)
+        XCTAssertLessThan(distances[1], 0)
+        XCTAssertGreaterThan(distances[2], 0.1)
+        XCTAssertLessThan(distances[3], 0)
+        XCTAssertLessThan(distances[4], 0)
+        XCTAssertGreaterThan(distances[5], 0.3)
     }
 
     func testHeroProductionTraversalShowsEveryCreatureAtBothAnimationTimes() throws {
