@@ -198,17 +198,86 @@ kernel void reduceMixedOccupancy(texture3d<uint, access::read> source [[texture(
     destination.write(uint4(flags), gid);
 }
 
-kernel void injectVolumeLighting(texture3d<half, access::write> volumeLighting [[texture(0)]],
-                                 uint3 gid [[thread_position_in_grid]]) {
+kernel void clearVolumeLighting(texture3d<half, access::write> volumeLighting [[texture(2)]],
+                                uint3 gid [[thread_position_in_grid]]) {
     if (any(gid >= uint3(64u))) {
         return;
     }
     volumeLighting.write(half4(0.0h, 0.0h, 0.0h, 1.0h), gid);
 }
 
+kernel void injectVolumeLighting(
+    texture3d<uint, access::read> voxels [[texture(0)]],
+    texture3d<half, access::write> volumeLighting [[texture(2)]],
+    constant FrameUniforms &frame [[buffer(0)]],
+    constant SceneUniforms &scene [[buffer(1)]],
+    device const Gaussian *gaussians [[buffer(6)]],
+    device const Light *lights [[buffer(7)]],
+    device const uint *activeVolumeCells [[buffer(9)]],
+    uint gid [[thread_position_in_grid]]) {
+    if (gid >= scene.grid.w) {
+        return;
+    }
+    uint linearIndex = activeVolumeCells[gid];
+    uint3 cell(
+        linearIndex & 63u,
+        (linearIndex >> 6u) & 63u,
+        (linearIndex >> 12u) & 63u
+    );
+    float3 point = (float3(cell) + 0.5f) * 8.0f;
+    float3 sunDirection = normalize(frame.sunDirectionAndAmbient.xyz);
+    TraceHit shadowHit;
+    float sunVisibility = traceOcclusionExact(
+        voxels, point + sunDirection * 0.04f, sunDirection, 192.0f, shadowHit
+    ) ? 0.08f : 1.0f;
+    sunVisibility *= gaussianSceneTransmittance(
+        point, sunDirection, 0.05f, 192.0f, gaussians, scene.counts.y
+    );
+    float3 radiance = float3(0.10f) + float3(1.0f, 0.93f, 0.78f) * sunVisibility * 0.72f;
+
+    uint strongestIndex = 0u;
+    float strongestScore = -1.0f;
+    for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
+        Light source = lights[index];
+        Light light = animateLight(source, index, frame.cameraPositionAndTime.w);
+        float3 delta = light.positionRadius.xyz - point;
+        float distanceSquared = max(dot(delta, delta), 1.0f);
+        float score = light.colorIntensity.w / distanceSquared;
+        if (score > strongestScore) {
+            strongestScore = score;
+            strongestIndex = index;
+        }
+    }
+    for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
+        Light source = lights[index];
+        Light light = animateLight(source, index, frame.cameraPositionAndTime.w);
+        float3 delta = light.positionRadius.xyz - point;
+        float distance = max(length(delta), 0.01f);
+        if (distance >= light.positionRadius.w) {
+            continue;
+        }
+        float3 lightDirection = delta / distance;
+        float visibility = gaussianSceneTransmittance(
+            point, lightDirection, 0.05f, distance, gaussians, scene.counts.y
+        );
+        if (index == strongestIndex) {
+            TraceHit localShadow;
+            if (traceOcclusionExact(voxels, point + lightDirection * 0.04f,
+                                    lightDirection, distance - 0.08f, localShadow)) {
+                visibility *= 0.08f;
+            }
+        }
+        float falloff = 1.0f - distance / light.positionRadius.w;
+        radiance += light.colorIntensity.xyz * light.colorIntensity.w
+            * falloff * falloff * visibility * 0.16f;
+    }
+    volumeLighting.write(half4(half3(radiance), half(sunVisibility)), cell);
+}
+
 kernel void raycastHybrid(
     texture3d<uint, access::read> volume [[texture(0)]],
     texture3d<uint, access::read> mixed [[texture(1)]],
+    texture3d<half, access::read> volumeLighting [[texture(2)]],
     texture2d<float, access::write> output [[texture(3)]],
     constant FrameUniforms &uniforms [[buffer(0)]],
     constant SceneUniforms &scene [[buffer(1)]],
@@ -217,6 +286,7 @@ kernel void raycastHybrid(
     device const uint *gaussianRefs [[buffer(4)]],
     device const SDFInstance *sdfs [[buffer(5)]],
     device const Gaussian *gaussians [[buffer(6)]],
+    device const Light *lights [[buffer(7)]],
     device const Material *materials [[buffer(8)]],
     uint2 gid [[thread_position_in_grid]]) {
     uint2 viewport = uniforms.viewportAndOptions.xy;
@@ -236,11 +306,13 @@ kernel void raycastHybrid(
     float3 color;
     HybridHit hit;
     TraceCounts counts = {};
-
-    if (traceMixedScene(
+    bool hasHit = traceMixedScene(
         volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
-        origin, direction, uniforms.cameraUpAndMaxDistance.w, hit, counts
-    )) {
+        origin, direction, uniforms.cameraUpAndMaxDistance.w,
+        uniforms.cameraPositionAndTime.w, hit, counts
+    );
+
+    if (hasHit) {
         float3 point = origin + direction * hit.t;
         float diffuse = max(0.0f, dot(hit.normal, sunDirection));
         float lighting = uniforms.sunDirectionAndAmbient.w
@@ -257,9 +329,53 @@ kernel void raycastHybrid(
             }
         }
 
-        color = hit.primitiveKind == 0u
-            ? kPalette[min(hit.material, 42u)] * lighting
-            : materials[min(hit.material, max(scene.counts.w, 1u) - 1u)].baseColorRoughness.xyz * lighting;
+        uint materialIndex = hit.primitiveKind == 0u
+            ? 0u : min(hit.material, max(scene.counts.w, 1u) - 1u);
+        float3 baseColor = hit.primitiveKind == 0u
+            ? kPalette[min(hit.material, 42u)]
+            : materials[materialIndex].baseColorRoughness.xyz;
+        color = baseColor * lighting;
+        uint selectedMask = 0u;
+        for (uint selection = 0u; selection < min(scene.counts.z, 4u); ++selection) {
+            uint bestIndex = 0u;
+            float bestScore = -1.0f;
+            for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
+                if ((selectedMask & (1u << index)) != 0u) continue;
+                Light source = lights[index];
+                Light light = animateLight(source, index, uniforms.cameraPositionAndTime.w);
+                float3 delta = light.positionRadius.xyz - point;
+                float score = light.colorIntensity.w / max(dot(delta, delta), 1.0f);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIndex = index;
+                }
+            }
+            selectedMask |= 1u << bestIndex;
+            Light source = lights[bestIndex];
+            Light light = animateLight(source, bestIndex, uniforms.cameraPositionAndTime.w);
+            float3 delta = light.positionRadius.xyz - point;
+            float distance = max(length(delta), 0.01f);
+            if (distance >= light.positionRadius.w) continue;
+            float3 lightDirection = delta / distance;
+            float falloff = 1.0f - distance / light.positionRadius.w;
+            float visibility = gaussianSceneTransmittance(
+                point + hit.normal * 0.04f, lightDirection, 0.05f, distance,
+                gaussians, scene.counts.y
+            );
+            if (selection == 0u) {
+                TraceHit localShadow;
+                if (traceOcclusionExact(volume, point + hit.normal * 0.04f,
+                                        lightDirection, distance - 0.08f, localShadow)) {
+                    visibility *= 0.08f;
+                }
+            }
+            float diffuseLocal = max(dot(hit.normal, lightDirection), 0.0f);
+            color += baseColor * light.colorIntensity.xyz * light.colorIntensity.w
+                * diffuseLocal * falloff * falloff * visibility * 0.12f;
+        }
+        if (hit.primitiveKind != 0u) {
+            color += materials[materialIndex].emissionMetalness.xyz;
+        }
         float fogStart = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.x;
         float fogEnd = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.y;
         float fog = saturate((hit.t - fogStart) / max(0.001f, fogEnd - fogStart));
@@ -267,6 +383,22 @@ kernel void raycastHybrid(
     } else {
         color = skyColor(direction, sunDirection);
     }
+
+    float volumeLimit = hasHit ? hit.t : uniforms.cameraUpAndMaxDistance.w;
+    float transmittance = 1.0f;
+    float3 scattering(0.0f);
+    for (uint index = 0u; index < min(scene.counts.y, 48u); ++index) {
+        Gaussian gaussian = gaussians[index];
+        float opticalDepth = gaussianOpticalDepth(origin, direction, 0.0f, volumeLimit, gaussian);
+        if (opticalDepth <= 1.0e-5f) continue;
+        float segmentTransmittance = exp(-min(opticalDepth, 20.0f));
+        int3 cell = int3(clamp(floor(gaussian.localCenterSigma.xyz / 8.0f), float3(0.0f), float3(63.0f)));
+        float3 incident = float3(volumeLighting.read(uint3(cell)).xyz);
+        scattering += transmittance * (1.0f - segmentTransmittance)
+            * gaussian.colorDensity.xyz * incident;
+        transmittance *= segmentTransmittance;
+    }
+    color = color * transmittance + scattering;
 
     color = pow(saturate(color * uniforms.fogAndExposure.z), float3(1.0f / 2.2f));
     output.write(float4(color, 1.0f), gid);

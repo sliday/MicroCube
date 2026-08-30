@@ -79,6 +79,82 @@ inline float3 sdfNormal(float3 point,
         : float3(0.0f, 1.0f, 0.0f);
 }
 
+inline SDFInstance animateSDFInstance(thread const SDFInstance &source, float time) {
+    SDFInstance instance = source;
+    if (instance.metadata.x == 1u) {
+        float phase = instance.parameters.y + time * 0.78f;
+        instance.positionScale.x += sin(phase) * 2.2f;
+        instance.positionScale.y += abs(sin(phase * 1.7f)) * 0.22f;
+        instance.positionScale.z += cos(phase * 0.73f) * 1.5f;
+        instance.rotationQuaternion = float4(0.0f, sin(phase * 0.5f) * 0.12f, 0.0f,
+                                              cos(phase * 0.5f) * 0.12f + 0.9928f);
+    }
+    return instance;
+}
+
+inline Light animateLight(thread const Light &source, uint index, float time) {
+    Light light = source;
+    float phase = float(index) * 0.83f + time * 0.78f;
+    light.positionRadius.x += sin(phase) * 2.2f;
+    light.positionRadius.y += abs(sin(phase * 1.7f)) * 0.22f;
+    light.positionRadius.z += cos(phase * 0.73f) * 1.5f;
+    light.colorIntensity.w *= 0.72f + 0.28f * (0.5f + 0.5f * sin(time * 2.4f + float(index) * 1.37f));
+    return light;
+}
+
+inline float homogeneousTransmittance(float extinction, float distance) {
+    return exp(-max(extinction, 0.0f) * max(distance, 0.0f));
+}
+
+inline float gaussianDensity(float3 point, thread const Gaussian &gaussian) {
+    float3 delta = point - gaussian.localCenterSigma.xyz;
+    float sigma = max(gaussian.localCenterSigma.w, 0.001f);
+    return max(gaussian.colorDensity.w, 0.0f) * exp(-0.5f * dot(delta, delta) / (sigma * sigma));
+}
+
+inline float errorFunctionApproximation(float value) {
+    float signValue = value < 0.0f ? -1.0f : 1.0f;
+    float x = abs(value);
+    float t = 1.0f / (1.0f + 0.3275911f * x);
+    float polynomial = (((((1.061405429f * t - 1.453152027f) * t) + 1.421413741f) * t
+                         - 0.284496736f) * t + 0.254829592f) * t;
+    return signValue * (1.0f - polynomial * exp(-x * x));
+}
+
+inline float gaussianOpticalDepth(float3 origin,
+                                  float3 direction,
+                                  float minimumDistance,
+                                  float maximumDistance,
+                                  thread const Gaussian &gaussian) {
+    float sigma = max(gaussian.localCenterSigma.w, 0.001f);
+    float3 delta = gaussian.localCenterSigma.xyz - origin;
+    float projection = dot(delta, direction);
+    float perpendicularSquared = max(dot(delta, delta) - projection * projection, 0.0f);
+    float amplitude = max(gaussian.colorDensity.w, 0.0f)
+        * exp(-0.5f * perpendicularSquared / (sigma * sigma));
+    float inverseScale = 1.0f / (sqrt(2.0f) * sigma);
+    float integral = sigma * sqrt(0.5f * M_PI_F)
+        * (errorFunctionApproximation((maximumDistance - projection) * inverseScale)
+           - errorFunctionApproximation((minimumDistance - projection) * inverseScale));
+    return max(amplitude * integral, 0.0f);
+}
+
+inline float gaussianSceneTransmittance(float3 origin,
+                                        float3 direction,
+                                        float minimumDistance,
+                                        float maximumDistance,
+                                        device const Gaussian *gaussians,
+                                        uint gaussianCount) {
+    float opticalDepth = 0.0f;
+    for (uint index = 0u; index < min(gaussianCount, 48u); ++index) {
+        Gaussian gaussian = gaussians[index];
+        opticalDepth += gaussianOpticalDepth(
+            origin, direction, minimumDistance, maximumDistance, gaussian
+        );
+    }
+    return exp(-min(opticalDepth, 20.0f));
+}
+
 inline bool intersectWorld(float3 origin, float3 direction, thread float &nearT, thread float &farT) {
     float3 inverseDirection = 1.0f / copysign(max(abs(direction), float3(1.0e-7f)), direction);
     float3 a = (float3(0.0f) - origin) * inverseDirection;
@@ -272,6 +348,7 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
                             float3 origin,
                             float3 direction,
                             float maximumDistance,
+                            float time,
                             thread HybridHit &hit,
                             thread TraceCounts &counts) {
     float nearT;
@@ -341,7 +418,8 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
                 ++counts.budgetOverflows;
                 continue;
             }
-            SDFInstance instance = sdfs[instanceIndex];
+            SDFInstance sourceInstance = sdfs[instanceIndex];
+            SDFInstance instance = animateSDFInstance(sourceInstance, time);
             float sweptNear;
             float sweptFar;
             if (!intersectBounds(origin, direction, instance.sweptBoundsMin.xyz,
@@ -395,6 +473,25 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
         hit = bestHit;
     }
     return found;
+}
+
+inline bool traceMixedScene(texture3d<uint, access::read> voxels,
+                            texture3d<uint, access::read> mixed,
+                            device const CellHeader *headers,
+                            device const uint *sdfRefs,
+                            device const uint *gaussianRefs,
+                            device const SDFInstance *sdfs,
+                            device const Gaussian *gaussians,
+                            constant SceneUniforms &scene,
+                            float3 origin,
+                            float3 direction,
+                            float maximumDistance,
+                            thread HybridHit &hit,
+                            thread TraceCounts &counts) {
+    return traceMixedScene(
+        voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+        origin, direction, maximumDistance, 0.0f, hit, counts
+    );
 }
 
 inline bool traceOcclusionExact(texture3d<uint, access::read> volume,

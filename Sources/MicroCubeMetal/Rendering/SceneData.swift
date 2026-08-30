@@ -37,6 +37,39 @@ struct SceneData {
             parameters: SIMD4<Float>(8, 0, 0, 0),
             metadata: SIMD4<UInt32>(3, 2, 0, 1)
         )
+        let creatureCenters = [
+            SIMD3<Float>(270, 96, 292),
+            SIMD3<Float>(281, 95, 300),
+            SIMD3<Float>(293, 96, 294),
+            SIMD3<Float>(275, 95, 310),
+            SIMD3<Float>(287, 96, 316),
+            SIMD3<Float>(299, 95, 308)
+        ]
+        let creatures = creatureCenters.enumerated().map { index, center in
+            SDFInstance(
+                sweptBoundsMin: SIMD4<Float>(center.x - 5, center.y - 11, center.z - 5, 0),
+                sweptBoundsMax: SIMD4<Float>(center.x + 5, center.y + 11, center.z + 5, 0),
+                positionScale: SIMD4<Float>(center.x, center.y, center.z, 3),
+                rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
+                parameters: SIMD4<Float>(12, Float(index) * 0.83, 0, 0),
+                metadata: SIMD4<UInt32>(1, 3, 1, UInt32(index + 2))
+            )
+        }
+        let lightColors = [
+            SIMD3<Float>(1.0, 0.22, 0.08),
+            SIMD3<Float>(0.18, 0.62, 1.0),
+            SIMD3<Float>(0.88, 0.16, 0.48),
+            SIMD3<Float>(0.35, 1.0, 0.42),
+            SIMD3<Float>(1.0, 0.62, 0.12),
+            SIMD3<Float>(0.54, 0.28, 1.0)
+        ]
+        let lights = creatureCenters.enumerated().map { index, center in
+            let color = lightColors[index]
+            return Light(
+                positionRadius: SIMD4<Float>(center.x, center.y + 7.2, center.z, 22),
+                colorIntensity: SIMD4<Float>(color.x, color.y, color.z, 10)
+            )
+        }
         let gaussians = (0..<8).map { index -> Gaussian in
             let angle = Float(index) * (.pi * 2 / 8)
             return Gaussian(
@@ -68,12 +101,18 @@ struct SceneData {
                 emissionMetalness: SIMD4<Float>(0.03, 0.01, 0, 0),
                 opticalAbsorptionIOR: SIMD4<Float>(0, 0, 0, 1),
                 transmissionAcoustic: .zero
+            ),
+            Material(
+                baseColorRoughness: SIMD4<Float>(0.12, 0.11, 0.10, 0.46),
+                emissionMetalness: SIMD4<Float>(0.35, 0.05, 0.02, 0),
+                opticalAbsorptionIOR: SIMD4<Float>(0, 0, 0, 1),
+                transmissionAcoustic: .zero
             )
         ]
         return try build(
-            sdfInstances: [sculpture, fractal],
+            sdfInstances: [sculpture, fractal] + creatures,
             gaussians: gaussians,
-            lights: [],
+            lights: lights,
             materials: materials
         )
     }

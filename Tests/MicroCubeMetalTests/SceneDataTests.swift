@@ -23,6 +23,13 @@ final class SceneDataTests: XCTestCase {
         }
     }
 
+    func testHeroSceneContainsSixCreaturesAndSixLights() throws {
+        let scene = try SceneData.makeHero()
+
+        XCTAssertEqual(scene.sdfInstances.filter { $0.metadata.x == 1 }.count, 6)
+        XCTAssertEqual(scene.lights.count, 6)
+    }
+
     func testCellHeaderPacksCountsAndReferencesInStableIDOrder() throws {
         let scene = try SceneData.build(
             sdfInstances: [makeSDF(stableID: 9), makeSDF(stableID: 2)],
@@ -157,6 +164,10 @@ final class SceneDataTests: XCTestCase {
         XCTAssertEqual(resources.mixedOccupancy.depth, 64)
         XCTAssertEqual(resources.mixedOccupancy.mipmapLevelCount, 7)
         XCTAssertEqual(resources.mixedOccupancy.pixelFormat, .r8Uint)
+        XCTAssertEqual(resources.volumeLighting.width, 64)
+        XCTAssertEqual(resources.volumeLighting.height, 64)
+        XCTAssertEqual(resources.volumeLighting.depth, 64)
+        XCTAssertEqual(resources.volumeLighting.pixelFormat, .rgba16Float)
         XCTAssertEqual(resources.cellHeaders.length, scene.cellHeaders.count * MemoryLayout<CellHeader>.stride)
         XCTAssertEqual(resources.cellSDFRefs.length, scene.cellSDFRefs.count * MemoryLayout<UInt32>.stride)
         XCTAssertEqual(resources.cellGaussianRefs.length, scene.cellGaussianRefs.count * MemoryLayout<UInt32>.stride)

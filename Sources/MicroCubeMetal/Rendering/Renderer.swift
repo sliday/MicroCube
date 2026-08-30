@@ -11,6 +11,7 @@ enum SceneGPUResourceError: Error {
 struct SceneGPUResources {
     let scene: SceneData
     let mixedOccupancy: MTLTexture
+    let volumeLighting: MTLTexture
     let cellHeaders: MTLBuffer
     let cellSDFRefs: MTLBuffer
     let cellGaussianRefs: MTLBuffer
@@ -33,9 +34,15 @@ struct SceneGPUResources {
         guard let mixedOccupancy = device.makeTexture(descriptor: descriptor) else {
             throw SceneGPUResourceError.allocation("mixed occupancy")
         }
+        descriptor.pixelFormat = .rgba16Float
+        descriptor.mipmapLevelCount = 1
+        guard let volumeLighting = device.makeTexture(descriptor: descriptor) else {
+            throw SceneGPUResourceError.allocation("volume lighting")
+        }
 
         self.scene = scene
         self.mixedOccupancy = mixedOccupancy
+        self.volumeLighting = volumeLighting
         cellHeaders = try Self.makeBuffer(device: device, values: scene.cellHeaders, name: "cell headers")
         cellSDFRefs = try Self.makeBuffer(device: device, values: scene.cellSDFRefs, name: "SDF references")
         cellGaussianRefs = try Self.makeBuffer(device: device, values: scene.cellGaussianRefs, name: "Gaussian references")
@@ -99,6 +106,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let reductionPipeline: MTLComputePipelineState
     private let mixedBuildPipeline: MTLComputePipelineState
     private let mixedReductionPipeline: MTLComputePipelineState
+    private let volumeClearPipeline: MTLComputePipelineState
+    private let volumeLightingPipeline: MTLComputePipelineState
     private let raycastPipeline: MTLComputePipelineState
     private let raycastThreadgroupSize: MTLSize
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
@@ -129,6 +138,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         let reductionPipeline: MTLComputePipelineState
         let mixedBuildPipeline: MTLComputePipelineState
         let mixedReductionPipeline: MTLComputePipelineState
+        let volumeClearPipeline: MTLComputePipelineState
+        let volumeLightingPipeline: MTLComputePipelineState
         let raycastPipeline: MTLComputePipelineState
         do {
             library = try Renderer.makeLibrary(device: device)
@@ -136,6 +147,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             reductionPipeline = try Renderer.makePipeline(name: "reduceOccupancy", library: library, device: device)
             mixedBuildPipeline = try Renderer.makePipeline(name: "buildMixedOccupancy", library: library, device: device)
             mixedReductionPipeline = try Renderer.makePipeline(name: "reduceMixedOccupancy", library: library, device: device)
+            volumeClearPipeline = try Renderer.makePipeline(name: "clearVolumeLighting", library: library, device: device)
+            volumeLightingPipeline = try Renderer.makePipeline(name: "injectVolumeLighting", library: library, device: device)
             raycastPipeline = try Renderer.makePipeline(name: "raycastHybrid", library: library, device: device)
         } catch {
             return nil
@@ -169,6 +182,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.reductionPipeline = reductionPipeline
         self.mixedBuildPipeline = mixedBuildPipeline
         self.mixedReductionPipeline = mixedReductionPipeline
+        self.volumeClearPipeline = volumeClearPipeline
+        self.volumeLightingPipeline = volumeLightingPipeline
         self.raycastPipeline = raycastPipeline
         self.raycastThreadgroupSize = Renderer.make2DThreadgroupSize(for: raycastPipeline)
         self.metalView = metalView
@@ -213,8 +228,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         guard let drawable = view.currentDrawable,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
             inFlightSemaphore.signal()
             return
         }
@@ -224,10 +238,38 @@ final class Renderer: NSObject, MTKViewDelegate {
         var uniforms = makeUniforms(width: width, height: height, time: now)
         var sceneUniforms = makeSceneUniforms()
 
+        guard let volumeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            inFlightSemaphore.signal()
+            return
+        }
+        volumeEncoder.label = "Inject volume lighting"
+        volumeEncoder.setComputePipelineState(volumeLightingPipeline)
+        volumeEncoder.setTexture(volumeTexture, index: 0)
+        volumeEncoder.setTexture(sceneResources.volumeLighting, index: 2)
+        volumeEncoder.setBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 0)
+        volumeEncoder.setBytes(&sceneUniforms, length: MemoryLayout<SceneUniforms>.stride, index: 1)
+        volumeEncoder.setBuffer(sceneResources.gaussians, offset: 0, index: 6)
+        volumeEncoder.setBuffer(sceneResources.lights, offset: 0, index: 7)
+        volumeEncoder.setBuffer(sceneResources.activeVolumeCells, offset: 0, index: 9)
+        let volumeThreadWidth = min(
+            volumeLightingPipeline.threadExecutionWidth,
+            volumeLightingPipeline.maxTotalThreadsPerThreadgroup
+        )
+        volumeEncoder.dispatchThreads(
+            MTLSize(width: sceneResources.scene.activeVolumeCells.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: volumeThreadWidth, height: 1, depth: 1)
+        )
+        volumeEncoder.endEncoding()
+
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            inFlightSemaphore.signal()
+            return
+        }
         encoder.label = "MicroCube raycast"
         encoder.setComputePipelineState(raycastPipeline)
         encoder.setTexture(volumeTexture, index: 0)
         encoder.setTexture(sceneResources.mixedOccupancy, index: 1)
+        encoder.setTexture(sceneResources.volumeLighting, index: 2)
         encoder.setTexture(drawable.texture, index: 3)
         encoder.setBytes(&uniforms, length: MemoryLayout<FrameUniforms>.stride, index: 0)
         encoder.setBytes(&sceneUniforms, length: MemoryLayout<SceneUniforms>.stride, index: 1)
@@ -236,6 +278,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setBuffer(sceneResources.cellGaussianRefs, offset: 0, index: 4)
         encoder.setBuffer(sceneResources.sdfInstances, offset: 0, index: 5)
         encoder.setBuffer(sceneResources.gaussians, offset: 0, index: 6)
+        encoder.setBuffer(sceneResources.lights, offset: 0, index: 7)
         encoder.setBuffer(sceneResources.materials, offset: 0, index: 8)
         encoder.dispatchThreads(
             MTLSize(width: width, height: height, depth: 1),
@@ -379,6 +422,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             )
             encoder.endEncoding()
         }
+
+        guard let volumeClearEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            return false
+        }
+        volumeClearEncoder.label = "Clear volume lighting"
+        volumeClearEncoder.setComputePipelineState(volumeClearPipeline)
+        volumeClearEncoder.setTexture(sceneResources.volumeLighting, index: 2)
+        volumeClearEncoder.dispatchThreads(
+            MTLSize(width: 64, height: 64, depth: 64),
+            threadsPerThreadgroup: Renderer.make3DThreadgroupSize(for: volumeClearPipeline)
+        )
+        volumeClearEncoder.endEncoding()
 
         commandBuffer.label = "Build MicroCube world"
         commandBuffer.commit()
