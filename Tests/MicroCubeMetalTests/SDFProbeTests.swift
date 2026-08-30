@@ -6,6 +6,7 @@ import XCTest
 final class SDFProbeTests: XCTestCase {
     func testSDFProbeEnvelopeUsesRequiredMetricKeysFromGPUResult() throws {
         let values = try runProbe()
+        let fractalCoverage = try runFractalCoverageProbe()
         let normal = SIMD3<Float>(values[3], values[4], values[5])
         let metrics = SDFProbeMetrics(
             maxDistanceError: Double(max(abs(values[0] - 1), abs(values[1] - 0.5), abs(values[2] - 0.14375))),
@@ -13,7 +14,7 @@ final class SDFProbeTests: XCTestCase {
             maxNormalLengthError: Double(abs(simd_length(normal) - 1)),
             nonFiniteCount: Int(values[8]),
             negativeExteriorStepCount: Int(values[7]),
-            fractalCoverage: 0
+            fractalCoverage: fractalCoverage
         )
         let data = try ProbeEnvelope.evaluated(probe: "sdf", device: "test-device", metrics: metrics).encodedJSON()
         let decoded = try ProbeEnvelope<SDFProbeMetrics>.decodeValidated(data)
@@ -28,6 +29,8 @@ final class SDFProbeTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(decoded.metrics.maxDistanceError, 0.0001)
         XCTAssertEqual(decoded.metrics.nonFiniteCount, 0)
+        XCTAssertGreaterThan(decoded.metrics.fractalCoverage, 0)
+        XCTAssertLessThan(decoded.metrics.fractalCoverage, 0.10)
     }
 
     func testAnalyticDistancesAndNormalsMatchIndependentReferences() throws {
@@ -90,5 +93,93 @@ final class SDFProbeTests: XCTestCase {
         XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
         let pointer = buffer.contents().bindMemory(to: Float.self, capacity: 9)
         return Array(UnsafeBufferPointer(start: pointer, count: 9))
+    }
+
+    private func runFractalCoverageProbe() throws -> Double {
+        let source = """
+        kernel void probeFractalCoverage(
+            device atomic_uint *output [[buffer(0)]],
+            device const SDFInstance *sdfs [[buffer(1)]],
+            constant SceneUniforms &scene [[buffer(2)]],
+            constant FrameUniforms &frame [[buffer(3)]],
+            uint2 gid [[thread_position_in_grid]]) {
+            if (any(gid >= frame.viewportAndOptions.xy)) return;
+            float2 pixel = float2(gid) + 0.5f;
+            float horizontal = (2.0f * pixel.x / float(frame.viewportAndOptions.x) - 1.0f)
+                * frame.cameraForwardAndFOV.w * frame.cameraRightAndAspect.w;
+            float vertical = (1.0f - 2.0f * pixel.y / float(frame.viewportAndOptions.y))
+                * frame.cameraForwardAndFOV.w;
+            float3 direction = normalize(frame.cameraForwardAndFOV.xyz
+                + frame.cameraRightAndAspect.xyz * horizontal
+                + frame.cameraUpAndMaxDistance.xyz * vertical);
+            HybridHit hit;
+            TraceCounts counts = {};
+            SDFInstance fractal = sdfs[0];
+            bool found = traceSDFInstance(
+                frame.cameraPositionAndTime.xyz, direction, 0.0f,
+                frame.cameraUpAndMaxDistance.w, fractal, scene, hit, counts
+            );
+            atomic_fetch_add_explicit(&output[0], 1u, memory_order_relaxed);
+            if (found && hit.stableID == 1u) {
+                atomic_fetch_add_explicit(&output[1], 1u, memory_order_relaxed);
+            }
+        }
+        """
+        let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
+        let pipeline = try MetalProbeHarness.makePipeline(name: "probeFractalCoverage", library: library, device: device)
+        let sceneData = try SceneData.makeHero()
+        let fractal = try XCTUnwrap(sceneData.sdfInstances.first { $0.metadata.x == 3 })
+        var instance = fractal
+        let instances = try XCTUnwrap(device.makeBuffer(
+            bytes: &instance,
+            length: MemoryLayout<SDFInstance>.stride,
+            options: .storageModeShared
+        ))
+        let output = try XCTUnwrap(device.makeBuffer(
+            length: 2 * MemoryLayout<UInt32>.stride,
+            options: .storageModeShared
+        ))
+        _ = output.contents().initializeMemory(as: UInt32.self, repeating: 0, count: 2)
+        let width = 128
+        let height = 80
+        let yaw: Float = 0.6
+        let pitch: Float = -0.18
+        let cosPitch = cos(pitch)
+        let sinPitch = sin(pitch)
+        let cosYaw = cos(yaw)
+        let sinYaw = sin(yaw)
+        var scene = SceneUniforms(
+            counts: SIMD4<UInt32>(1, 0, 0, 0),
+            grid: SIMD4<UInt32>(64, 8, 6, 0),
+            fog: .zero,
+            budgets: SIMD4<UInt32>(24, 32, 48, 8)
+        )
+        var frame = FrameUniforms(
+            cameraPositionAndTime: SIMD4<Float>(256.5, 112, 256.5, 0),
+            cameraForwardAndFOV: SIMD4<Float>(cosPitch * sinYaw, sinPitch, cosPitch * cosYaw, tan(35 * .pi / 180)),
+            cameraRightAndAspect: SIMD4<Float>(cosYaw, 0, -sinYaw, Float(width) / Float(height)),
+            cameraUpAndMaxDistance: SIMD4<Float>(-sinPitch * sinYaw, cosPitch, -sinPitch * cosYaw, 256),
+            sunDirectionAndAmbient: .zero,
+            viewportAndOptions: SIMD4<UInt32>(UInt32(width), UInt32(height), 0, 0),
+            fogAndExposure: .zero
+        )
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(output, offset: 0, index: 0)
+        encoder.setBuffer(instances, offset: 0, index: 1)
+        encoder.setBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 2)
+        encoder.setBytes(&frame, length: MemoryLayout<FrameUniforms>.stride, index: 3)
+        encoder.dispatchThreads(
+            MTLSize(width: width, height: height, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
+        let values = output.contents().bindMemory(to: UInt32.self, capacity: 2)
+        return Double(values[1]) / Double(values[0])
     }
 }

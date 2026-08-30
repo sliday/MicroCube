@@ -459,7 +459,7 @@ kernel void raycastHybrid(
     uint surfaceLocalShadows = 0u;
     bool surfaceShadowComparable = false;
     bool surfaceExactShadow = false;
-    bool surfaceLegacyShadow = false;
+    bool surfaceReferenceShadow = false;
 
     float2 pixel = float2(pixelGID) + 0.5f;
     float horizontal = (2.0f * pixel.x / float(viewport.x) - 1.0f)
@@ -497,10 +497,10 @@ kernel void raycastHybrid(
                 volume, point + hit.normal * 0.035f, sunDirection, 100.0f, exactShadowHit
             );
             if (evidenceView == 7u) {
-                TraceHit legacyShadowHit;
+                TraceHit referenceShadowHit;
                 surfaceShadowComparable = true;
-                surfaceLegacyShadow = traceVolume(
-                    volume, point + hit.normal * 0.035f, sunDirection, 100.0f, 1u, legacyShadowHit
+                surfaceReferenceShadow = traceOcclusionReference(
+                    volume, point + hit.normal * 0.035f, sunDirection, 100.0f, referenceShadowHit
                 );
             }
             if (shadowsEnabled && surfaceExactShadow) {
@@ -736,7 +736,7 @@ kernel void raycastHybrid(
         color = hasHit ? qaNormalColor(true, hit.normal) : qaNormalColor(false, float3(0.0f));
     } else if (evidenceView == 7u) {
         color = qaShadowMismatchColor(
-            surfaceShadowComparable, surfaceExactShadow, surfaceLegacyShadow
+            surfaceShadowComparable, surfaceExactShadow, surfaceReferenceShadow
         );
     }
 
@@ -749,6 +749,8 @@ kernel void raycastHybrid(
     if (!active) {
         return;
     }
-    color = pow(saturate(color * uniforms.fogAndExposure.z), float3(1.0f / 2.2f));
+    if (evidenceView < 5u || evidenceView > 7u) {
+        color = pow(saturate(color * uniforms.fogAndExposure.z), float3(1.0f / 2.2f));
+    }
     output.write(float4(color, 1.0f), gid);
 }

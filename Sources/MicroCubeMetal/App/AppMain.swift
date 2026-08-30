@@ -124,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } catch {
             mode = nil
             startupError = error.localizedDescription
+            QAMode.handleParseFailure(error, arguments: arguments)
         }
         let application = NSApplication.shared
         let delegate = AppDelegate(

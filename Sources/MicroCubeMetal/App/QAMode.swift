@@ -121,6 +121,56 @@ struct QAMode: Equatable {
         return try parse(arguments)
     }
 
+    static func rawReportPath(in arguments: [String]) -> String? {
+        var reportPath: String?
+        for index in arguments.indices where arguments[index] == "--qa-report" {
+            let valueIndex = index + 1
+            guard valueIndex < arguments.count else { continue }
+            let value = arguments[valueIndex]
+            guard !value.isEmpty, !value.hasPrefix("--") else { continue }
+            reportPath = value
+        }
+        return reportPath
+    }
+
+    static func handleParseFailure(
+        _ error: Error,
+        arguments: [String],
+        standardError: FileHandle = .standardError
+    ) {
+        let diagnostic = error.localizedDescription
+        standardError.write(Data((diagnostic + "\n").utf8))
+        guard let reportPath = rawReportPath(in: arguments) else { return }
+        let defaults = QAMode()
+        let report = QAFrameReport(
+            status: "fail",
+            failure: diagnostic,
+            device: "unavailable",
+            os: ProcessInfo.processInfo.operatingSystemVersionString,
+            scene: defaults.scene.rawValue,
+            fixedTime: defaults.fixedTime,
+            drawablePixels: [defaults.drawablePixels.x, defaults.drawablePixels.y],
+            renderScale: defaults.renderScale,
+            windowCount: 0,
+            productionKernels: [],
+            featureMask: defaults.featureMask,
+            passCount: 0,
+            stepCounters: [:],
+            shadowSampleCounts: [:],
+            budgetOverflows: 0,
+            commandErrors: 0,
+            droppedDrawables: 0,
+            semaphoreTimeouts: 0,
+            capturePath: nil,
+            fixedStep: defaults.fixedStep
+        )
+        do {
+            try report.write(to: reportPath)
+        } catch {
+            standardError.write(Data((error.localizedDescription + "\n").utf8))
+        }
+    }
+
     static func parse(_ arguments: [String]) throws -> QAMode {
         var mode = QAMode()
         var index = 0
@@ -501,6 +551,21 @@ struct MixedProbeMetrics: ProbeGateMetrics, Equatable {
         guard steps.allSatisfy({ $0.voxelSteps >= 0 && $0.sdfSteps >= 0 && $0.gaussianSamples >= 0 }) else {
             return "traversal counters must be nonnegative integers"
         }
+        guard voxelOnly.voxelSteps > 0 && voxelOnly.sdfSteps == 0 && voxelOnly.gaussianSamples == 0 else {
+            return "voxelOnly must measure only voxel traversal"
+        }
+        guard sdfOnly.voxelSteps == 0 && sdfOnly.sdfSteps > 0 && sdfOnly.gaussianSamples == 0 else {
+            return "sdfOnly must measure only SDF traversal"
+        }
+        guard gaussianOnly.voxelSteps == 0 && gaussianOnly.sdfSteps == 0 && gaussianOnly.gaussianSamples > 0 else {
+            return "gaussianOnly must measure only Gaussian traversal"
+        }
+        guard mixed.voxelSteps > 0 && mixed.sdfSteps > 0 && mixed.gaussianSamples > 0 else {
+            return "mixed must measure all traversal categories"
+        }
+        guard empty.voxelSteps == 0 && empty.sdfSteps == 0 && empty.gaussianSamples == 0 else {
+            return "empty must measure no primitive traversal"
+        }
         return nil
     }
 }
@@ -555,7 +620,9 @@ struct SDFProbeMetrics: ProbeGateMetrics, Equatable {
         }
         guard nonFiniteCount == 0 else { return "nonFiniteCount must equal zero" }
         guard negativeExteriorStepCount == 0 else { return "negativeExteriorStepCount must equal zero" }
-        guard fractalCoverage.isFinite, fractalCoverage < 0.10 else { return "fractalCoverage must be below 0.10" }
+        guard fractalCoverage.isFinite, fractalCoverage > 0, fractalCoverage < 0.10 else {
+            return "fractalCoverage must be above zero and below 0.10"
+        }
         return nil
     }
 }

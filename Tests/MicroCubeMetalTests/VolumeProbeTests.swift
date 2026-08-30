@@ -7,6 +7,7 @@ final class VolumeProbeTests: XCTestCase {
         let math = try runMathProbe()
         let clear = try runVolumeLighting(blocked: false)
         let blocked = try runVolumeLighting(blocked: true)
+        let smoke = try runSurfaceSmokeProbe()
         let first = try runMotionProbe(time: 0)
         let repeated = try runMotionProbe(time: 0)
         let later = try runMotionProbe(time: 1)
@@ -14,19 +15,25 @@ final class VolumeProbeTests: XCTestCase {
         let expectedGaussian = 1.253313
         let sunRatio = Double(blocked.x / clear.x)
         let localRatio = Double(blocked.w / clear.w)
+        let smokeSunRatio = Double(smoke[1] / smoke[0])
+        let smokeLocalRatio = Double(smoke[3] / smoke[2])
+        let expectedLocalTransmittance = exp(-0.65 * 0.75 * sqrt(2 * .pi))
         let volumeMetrics = VolumeProbeMetrics(
             maxHomogeneousRelativeError: abs(Double(math[0]) - expectedHomogeneous) / expectedHomogeneous,
             maxGaussianRelativeError: abs(Double(math[1]) - expectedGaussian) / expectedGaussian,
-            maxSurfaceTransmittanceRelativeError: abs(Double(math[2]) - exp(-expectedGaussian)) / exp(-expectedGaussian),
+            maxSurfaceTransmittanceRelativeError: max(
+                abs(smokeSunRatio - exp(-expectedGaussian)) / exp(-expectedGaussian),
+                abs(smokeLocalRatio - expectedLocalTransmittance) / expectedLocalTransmittance
+            ),
             sunShadowRadianceRatio: sunRatio,
             localShadowRadianceRatio: localRatio,
-            smokeSunReceiverRatio: sunRatio,
-            smokeLocalReceiverRatio: localRatio,
-            nonFiniteCount: Int(math[3])
+            smokeSunReceiverRatio: smokeSunRatio,
+            smokeLocalReceiverRatio: smokeLocalRatio,
+            nonFiniteCount: Int(math[3]) + smoke.filter { !$0.isFinite }.count
         )
         let motionMetrics = MotionProbeMetrics(
-            creatureCount: 6,
-            lightCount: 6,
+            creatureCount: Int(first[8]),
+            lightCount: Int(first[9]),
             repeatMismatchCount: first == repeated ? 0 : 1,
             poseDeltaAtOneSecond: zip(first[0..<4], later[0..<4]).map { abs($0 - $1) }.reduce(0, +),
             lightDeltaAtOneSecond: zip(first[4..<8], later[4..<8]).map { abs($0 - $1) }.reduce(0, +)
@@ -49,6 +56,8 @@ final class VolumeProbeTests: XCTestCase {
         )
         XCTAssertLessThan(try ProbeEnvelope<VolumeProbeMetrics>.decodeValidated(volumeData).metrics.sunShadowRadianceRatio, 0.35)
         XCTAssertEqual(try ProbeEnvelope<MotionProbeMetrics>.decodeValidated(motionData).metrics.repeatMismatchCount, 0)
+        XCTAssertNotEqual(volumeMetrics.sunShadowRadianceRatio, volumeMetrics.smokeSunReceiverRatio)
+        XCTAssertNotEqual(volumeMetrics.localShadowRadianceRatio, volumeMetrics.smokeLocalReceiverRatio)
     }
 
     func testGaussianOpticalDepthMatchesAnalyticReference() throws {
@@ -65,6 +74,7 @@ final class VolumeProbeTests: XCTestCase {
         let repeated = try runMotionProbe(time: 0)
         let later = try runMotionProbe(time: 1)
 
+        XCTAssertEqual(first.count, 10)
         XCTAssertEqual(first, repeated)
         XCTAssertNotEqual(Array(first[0..<4]), Array(later[0..<4]))
         XCTAssertNotEqual(Array(first[4..<8]), Array(later[4..<8]))
@@ -103,20 +113,23 @@ final class VolumeProbeTests: XCTestCase {
         kernel void probeMotion(
             device float *output [[buffer(0)]],
             constant float &time [[buffer(1)]],
+            device const SDFInstance *sdfs [[buffer(2)]],
+            device const Light *lights [[buffer(3)]],
+            constant SceneUniforms &scene [[buffer(4)]],
             uint gid [[thread_position_in_grid]]) {
             if (gid != 0u) return;
-            SDFInstance creature;
-            creature.sweptBoundsMin = float4(270.0f, 84.0f, 288.0f, 0.0f);
-            creature.sweptBoundsMax = float4(282.0f, 112.0f, 300.0f, 0.0f);
-            creature.positionScale = float4(276.0f, 96.0f, 294.0f, 3.0f);
-            creature.rotationQuaternion = float4(0.0f, 0.0f, 0.0f, 1.0f);
-            creature.parameters = float4(12.0f, 0.0f, 0.0f, 0.0f);
-            creature.metadata = uint4(1u, 3u, 1u, 2u);
-            Light light;
-            light.positionRadius = float4(276.0f, 103.0f, 294.0f, 18.0f);
-            light.colorIntensity = float4(1.0f, 0.3f, 0.1f, 9.0f);
+            uint creatureCount = 0u;
+            uint firstCreature = 0u;
+            for (uint index = 0u; index < scene.counts.x; ++index) {
+                if (sdfs[index].metadata.x == 1u) {
+                    if (creatureCount == 0u) firstCreature = index;
+                    ++creatureCount;
+                }
+            }
+            SDFInstance creature = sdfs[firstCreature];
+            Light light = lights[0];
             SDFInstance moved = animateSDFInstance(creature, time);
-            Light animated = animateLight(light, 2u, time);
+            Light animated = animateLight(light, 0u, time);
             output[0] = moved.positionScale.x;
             output[1] = moved.positionScale.y;
             output[2] = moved.positionScale.z;
@@ -125,25 +138,101 @@ final class VolumeProbeTests: XCTestCase {
             output[5] = animated.positionRadius.y;
             output[6] = animated.positionRadius.z;
             output[7] = animated.colorIntensity.w;
+            output[8] = float(creatureCount);
+            output[9] = float(scene.counts.z);
         }
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
         let pipeline = try MetalProbeHarness.makePipeline(name: "probeMotion", library: library, device: device)
-        let output = try XCTUnwrap(device.makeBuffer(length: 8 * MemoryLayout<Float>.stride, options: .storageModeShared))
+        let hero = try SceneData.makeHero()
+        let sdfs = try XCTUnwrap(hero.sdfInstances.withUnsafeBytes { bytes in
+            device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared)
+        })
+        let lights = try XCTUnwrap(hero.lights.withUnsafeBytes { bytes in
+            device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared)
+        })
+        let output = try XCTUnwrap(device.makeBuffer(length: 10 * MemoryLayout<Float>.stride, options: .storageModeShared))
         let queue = try XCTUnwrap(device.makeCommandQueue())
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
         let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
         var probeTime = time
+        var scene = SceneUniforms(
+            counts: SIMD4<UInt32>(UInt32(hero.sdfInstances.count), UInt32(hero.gaussians.count), UInt32(hero.lights.count), UInt32(hero.materials.count)),
+            grid: SIMD4<UInt32>(64, 8, 6, UInt32(hero.activeVolumeCells.count)),
+            fog: .zero,
+            budgets: SIMD4<UInt32>(24, 32, 48, 8)
+        )
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(output, offset: 0, index: 0)
         encoder.setBytes(&probeTime, length: MemoryLayout<Float>.stride, index: 1)
+        encoder.setBuffer(sdfs, offset: 0, index: 2)
+        encoder.setBuffer(lights, offset: 0, index: 3)
+        encoder.setBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 4)
         encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
-        let pointer = output.contents().bindMemory(to: Float.self, capacity: 8)
-        return Array(UnsafeBufferPointer(start: pointer, count: 8))
+        let pointer = output.contents().bindMemory(to: Float.self, capacity: 10)
+        return Array(UnsafeBufferPointer(start: pointer, count: 10))
+    }
+
+    private func runSurfaceSmokeProbe() throws -> [Float] {
+        let source = """
+        kernel void probeSurfaceSmoke(
+            device float *output [[buffer(0)]],
+            device const Gaussian *gaussians [[buffer(1)]],
+            uint gid [[thread_position_in_grid]]) {
+            if (gid != 0u) return;
+            output[0] = gaussianSceneTransmittance(
+                float3(-5.0f, 0.0f, 0.0f), float3(1.0f, 0.0f, 0.0f),
+                0.0f, 10.0f, gaussians, 0u
+            );
+            output[1] = gaussianSceneTransmittance(
+                float3(-5.0f, 0.0f, 0.0f), float3(1.0f, 0.0f, 0.0f),
+                0.0f, 10.0f, gaussians, 1u
+            );
+            output[2] = gaussianSceneTransmittance(
+                float3(20.0f, -4.0f, 0.0f), float3(0.0f, 1.0f, 0.0f),
+                0.0f, 8.0f, gaussians + 1, 0u
+            );
+            output[3] = gaussianSceneTransmittance(
+                float3(20.0f, -4.0f, 0.0f), float3(0.0f, 1.0f, 0.0f),
+                0.0f, 8.0f, gaussians + 1, 1u
+            );
+        }
+        """
+        let gaussians = [
+            Gaussian(
+                localCenterSigma: SIMD4<Float>(0, 0, 0, 1),
+                colorDensity: SIMD4<Float>(0.6, 0.7, 0.8, 0.5),
+                motionPhase: .zero
+            ),
+            Gaussian(
+                localCenterSigma: SIMD4<Float>(20, 0, 0, 0.75),
+                colorDensity: SIMD4<Float>(0.8, 0.6, 0.4, 0.65),
+                motionPhase: .zero
+            ),
+        ]
+        let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
+        let pipeline = try MetalProbeHarness.makePipeline(name: "probeSurfaceSmoke", library: library, device: device)
+        let gaussianBuffer = try XCTUnwrap(gaussians.withUnsafeBytes { bytes in
+            device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared)
+        })
+        let output = try XCTUnwrap(device.makeBuffer(length: 4 * MemoryLayout<Float>.stride, options: .storageModeShared))
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(output, offset: 0, index: 0)
+        encoder.setBuffer(gaussianBuffer, offset: 0, index: 1)
+        encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
+        let pointer = output.contents().bindMemory(to: Float.self, capacity: 4)
+        return Array(UnsafeBufferPointer(start: pointer, count: 4))
     }
 
     private func runSingleThreadProbe(name: String, source: String, count: Int) throws -> [Float] {

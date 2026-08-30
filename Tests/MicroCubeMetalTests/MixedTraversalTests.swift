@@ -5,21 +5,16 @@ import XCTest
 final class MixedTraversalTests: XCTestCase {
     func testMixedProbeEnvelopeUsesRequiredMetricKeysFromGPUResult() throws {
         let report = try runMixedProbe()
-        let mixed = TraversalStepMetrics(
-            voxelSteps: report.voxelSteps,
-            sdfSteps: report.sdfSamples,
-            gaussianSamples: report.gaussianSamples
-        )
         let metrics = MixedProbeMetrics(
             mixedLeafVoxel: report.mixedLeafVoxel == 1,
             mixedLeafSDFRefs: report.mixedLeafSDFRefs,
             wrongNearestHits: report.hit == 1 && report.stableID == 3 ? 0 : 1,
             maxHitDistanceError: Double(abs(report.hitDistance - 8.5)),
-            voxelOnly: TraversalStepMetrics(voxelSteps: report.voxelSteps, sdfSteps: 0, gaussianSamples: 0),
-            sdfOnly: TraversalStepMetrics(voxelSteps: 0, sdfSteps: report.sdfSamples, gaussianSamples: 0),
-            gaussianOnly: TraversalStepMetrics(voxelSteps: 0, sdfSteps: 0, gaussianSamples: report.gaussianSamples),
-            mixed: mixed,
-            empty: TraversalStepMetrics(voxelSteps: 0, sdfSteps: 0, gaussianSamples: 0)
+            voxelOnly: report.voxelOnly,
+            sdfOnly: report.sdfOnly,
+            gaussianOnly: report.gaussianOnly,
+            mixed: report.mixed,
+            empty: report.empty
         )
         let data = try ProbeEnvelope.evaluated(probe: "mixed", device: "test-device", metrics: metrics).encodedJSON()
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -33,7 +28,7 @@ final class MixedTraversalTests: XCTestCase {
         )
         XCTAssertEqual(
             try ProbeEnvelope<MixedProbeMetrics>.decodeValidated(data).metrics.mixed,
-            mixed
+            report.mixed
         )
     }
 
@@ -76,6 +71,21 @@ final class MixedTraversalTests: XCTestCase {
         XCTAssertGreaterThan(report.macroSkips, 0)
         XCTAssertGreaterThan(report.macroDescents, 0)
         XCTAssertGreaterThanOrEqual(report.hierarchicalSteps, report.macroSkips + report.macroDescents)
+    }
+
+    func testTraversalCategoryCountersComeFromIsolatedRays() throws {
+        let report = try runMixedProbe()
+
+        XCTAssertGreaterThan(report.voxelOnly.voxelSteps, 0)
+        XCTAssertEqual(report.voxelOnly.sdfSteps, 0)
+        XCTAssertEqual(report.voxelOnly.gaussianSamples, 0)
+        XCTAssertEqual(report.sdfOnly.voxelSteps, 0)
+        XCTAssertGreaterThan(report.sdfOnly.sdfSteps, 0)
+        XCTAssertEqual(report.sdfOnly.gaussianSamples, 0)
+        XCTAssertEqual(report.gaussianOnly.voxelSteps, 0)
+        XCTAssertEqual(report.gaussianOnly.sdfSteps, 0)
+        XCTAssertGreaterThan(report.gaussianOnly.gaussianSamples, 0)
+        XCTAssertEqual(report.empty, TraversalStepMetrics(voxelSteps: 0, sdfSteps: 0, gaussianSamples: 0))
     }
 
     private func runMixedProbe() throws -> Report {
@@ -132,6 +142,46 @@ final class MixedTraversalTests: XCTestCase {
             output[16] = sdfDisabledHit.t;
             output[17] = float(counts.macroSkips);
             output[18] = float(counts.macroDescents);
+            HybridHit isolatedHit;
+            TraceCounts voxelOnlyCounts = {};
+            traceMixedScene(
+                voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                float3(112.5f, 40.5f, 40.5f), float3(1.0f, 0.0f, 0.0f), 32.0f,
+                isolatedHit, voxelOnlyCounts
+            );
+            TraceCounts sdfOnlyCounts = {};
+            traceMixedScene(
+                voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                float3(136.5f, 40.5f, 40.5f), float3(1.0f, 0.0f, 0.0f), 32.0f,
+                isolatedHit, sdfOnlyCounts
+            );
+            TraceCounts gaussianOnlyCounts = {};
+            traceMixedScene(
+                voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                float3(168.5f, 40.5f, 40.5f), float3(1.0f, 0.0f, 0.0f), 32.0f,
+                isolatedHit, gaussianOnlyCounts
+            );
+            TraceCounts emptyCounts = {};
+            traceMixedScene(
+                voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                float3(200.5f, 40.5f, 40.5f), float3(1.0f, 0.0f, 0.0f), 32.0f,
+                isolatedHit, emptyCounts
+            );
+            output[19] = float(voxelOnlyCounts.voxelSteps);
+            output[20] = float(voxelOnlyCounts.sdfSamples);
+            output[21] = float(voxelOnlyCounts.gaussianSamples);
+            output[22] = float(sdfOnlyCounts.voxelSteps);
+            output[23] = float(sdfOnlyCounts.sdfSamples);
+            output[24] = float(sdfOnlyCounts.gaussianSamples);
+            output[25] = float(gaussianOnlyCounts.voxelSteps);
+            output[26] = float(gaussianOnlyCounts.sdfSamples);
+            output[27] = float(gaussianOnlyCounts.gaussianSamples);
+            output[28] = float(counts.voxelSteps);
+            output[29] = float(counts.sdfSamples);
+            output[30] = float(counts.gaussianSamples);
+            output[31] = float(emptyCounts.voxelSteps);
+            output[32] = float(emptyCounts.sdfSamples);
+            output[33] = float(emptyCounts.gaussianSamples);
         }
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: probeSource)
@@ -151,7 +201,15 @@ final class MixedTraversalTests: XCTestCase {
             bytesPerRow: 1,
             bytesPerImage: 1
         )
-        let output = try XCTUnwrap(device.makeBuffer(length: 19 * MemoryLayout<Float>.stride, options: .storageModeShared))
+        voxels.replace(
+            region: MTLRegionMake3D(121, 40, 40, 1, 1, 1),
+            mipmapLevel: 0,
+            slice: 0,
+            withBytes: &voxel,
+            bytesPerRow: 1,
+            bytesPerImage: 1
+        )
+        let output = try XCTUnwrap(device.makeBuffer(length: 34 * MemoryLayout<Float>.stride, options: .storageModeShared))
         let headers = try makeBuffer(device: device, values: scene.cellHeaders)
         let sdfRefs = try makeBuffer(device: device, values: scene.cellSDFRefs)
         let gaussianRefs = try makeBuffer(device: device, values: scene.cellGaussianRefs)
@@ -198,17 +256,18 @@ final class MixedTraversalTests: XCTestCase {
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
 
-        let pointer = output.contents().bindMemory(to: Float.self, capacity: 19)
-        let values = Array(UnsafeBufferPointer(start: pointer, count: 19))
+        let pointer = output.contents().bindMemory(to: Float.self, capacity: 34)
+        let values = Array(UnsafeBufferPointer(start: pointer, count: 34))
         return Report(values: values)
     }
 
     private func makeFixtureScene() throws -> SceneData {
-        func sphere(centerX: Float, kind: UInt32, stableID: UInt32) -> SDFInstance {
+        func sphere(centerX: Float, centerY: Float = 17.5, centerZ: Float = 25.5,
+                    kind: UInt32, stableID: UInt32) -> SDFInstance {
             SDFInstance(
-                sweptBoundsMin: SIMD4<Float>(centerX - 0.5, 17, 25, 0),
-                sweptBoundsMax: SIMD4<Float>(centerX + 0.5, 18, 26, 0),
-                positionScale: SIMD4<Float>(centerX, 17.5, 25.5, 0.5),
+                sweptBoundsMin: SIMD4<Float>(centerX - 0.5, centerY - 0.5, centerZ - 0.5, 0),
+                sweptBoundsMax: SIMD4<Float>(centerX + 0.5, centerY + 0.5, centerZ + 0.5, 0),
+                positionScale: SIMD4<Float>(centerX, centerY, centerZ, 0.5),
                 rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
                 parameters: .zero,
                 metadata: SIMD4<UInt32>(kind, 0, 0, stableID)
@@ -216,6 +275,11 @@ final class MixedTraversalTests: XCTestCase {
         }
         let gaussian = Gaussian(
             localCenterSigma: SIMD4<Float>(12, 17.5, 25.5, 0.1),
+            colorDensity: SIMD4<Float>(0.5, 0.6, 0.7, 0.4),
+            motionPhase: .zero
+        )
+        let isolatedGaussian = Gaussian(
+            localCenterSigma: SIMD4<Float>(177, 40.5, 40.5, 0.1),
             colorDensity: SIMD4<Float>(0.5, 0.6, 0.7, 0.4),
             motionPhase: .zero
         )
@@ -229,8 +293,9 @@ final class MixedTraversalTests: XCTestCase {
             sdfInstances: [
                 sphere(centerX: 9.5, kind: 0, stableID: 3),
                 sphere(centerX: 11.5, kind: 4, stableID: 8),
+                sphere(centerX: 145.5, centerY: 40.5, centerZ: 40.5, kind: 0, stableID: 9),
             ],
-            gaussians: [gaussian],
+            gaussians: [gaussian, isolatedGaussian],
             lights: [],
             materials: [material]
         )
@@ -306,6 +371,11 @@ private struct Report {
     let sdfDisabledHitDistance: Float
     let macroSkips: Int
     let macroDescents: Int
+    let voxelOnly: TraversalStepMetrics
+    let sdfOnly: TraversalStepMetrics
+    let gaussianOnly: TraversalStepMetrics
+    let mixed: TraversalStepMetrics
+    let empty: TraversalStepMetrics
 
     init(values: [Float]) {
         mixedLeafVoxel = Int(values[0])
@@ -327,5 +397,10 @@ private struct Report {
         sdfDisabledHitDistance = values[16]
         macroSkips = Int(values[17])
         macroDescents = Int(values[18])
+        voxelOnly = TraversalStepMetrics(voxelSteps: Int(values[19]), sdfSteps: Int(values[20]), gaussianSamples: Int(values[21]))
+        sdfOnly = TraversalStepMetrics(voxelSteps: Int(values[22]), sdfSteps: Int(values[23]), gaussianSamples: Int(values[24]))
+        gaussianOnly = TraversalStepMetrics(voxelSteps: Int(values[25]), sdfSteps: Int(values[26]), gaussianSamples: Int(values[27]))
+        mixed = TraversalStepMetrics(voxelSteps: Int(values[28]), sdfSteps: Int(values[29]), gaussianSamples: Int(values[30]))
+        empty = TraversalStepMetrics(voxelSteps: Int(values[31]), sdfSteps: Int(values[32]), gaussianSamples: Int(values[33]))
     }
 }

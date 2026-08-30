@@ -720,6 +720,50 @@ inline bool traceOcclusionExact(texture3d<uint, access::read> volume,
     return traceVolume(volume, origin, direction, maximumDistance, 0u, hit);
 }
 
+inline bool traceOcclusionReference(texture3d<uint, access::read> volume,
+                                    float3 origin,
+                                    float3 direction,
+                                    float maximumDistance,
+                                    thread TraceHit &hit) {
+    float nearT;
+    float farT;
+    if (!intersectWorld(origin, direction, nearT, farT)) {
+        return false;
+    }
+    farT = min(farT, maximumDistance);
+    float3 inverseDirection = 1.0f / copysign(max(abs(direction), float3(1.0e-7f)), direction);
+    float t = nearT;
+    for (uint step = 0u; step < 4096u && t < farT; ++step) {
+        float3 point = origin + direction * (t + kTraceEpsilon);
+        int3 voxel = int3(floor(point));
+        if (any(voxel < int3(0)) || any(voxel >= int3(kWorldSize))) {
+            break;
+        }
+        uint material = volume.read(uint3(voxel), 0u).x;
+        if (material != 0u) {
+            float3 a = (float3(voxel) - origin) * inverseDirection;
+            float3 b = (float3(voxel + 1) - origin) * inverseDirection;
+            float3 entryPlane = min(a, b);
+            uint axis = maximumAxis(entryPlane);
+            hit.t = max(nearT, max(entryPlane.x, max(entryPlane.y, entryPlane.z)));
+            hit.voxel = voxel;
+            hit.normal = axisNormal(axis, direction);
+            hit.material = material;
+            return true;
+        }
+        float3 boundary = select(float3(voxel), float3(voxel + 1), direction > 0.0f);
+        float3 exits = (boundary - origin) * inverseDirection;
+        float3 candidates = select(float3(INFINITY), exits, exits > t + kTraceEpsilon);
+        uint axis = minimumAxis(candidates);
+        float nextT = candidates[axis];
+        if (!isfinite(nextT)) {
+            break;
+        }
+        t = nextT + kTraceEpsilon;
+    }
+    return false;
+}
+
 inline uint occupancy(texture3d<uint, access::read> volume, int3 position) {
     if (any(position < int3(0)) || any(position >= int3(kWorldSize))) {
         return 0u;

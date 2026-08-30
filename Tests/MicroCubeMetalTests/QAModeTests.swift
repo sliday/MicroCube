@@ -90,6 +90,55 @@ final class QAModeTests: XCTestCase {
         }
     }
 
+    func testParseFailureWritesReadableStderrAndFailingReport() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reportPath = directory.appendingPathComponent("parse-failure.json").path
+        let arguments = ["--qa-scene", "unknown", "--qa-report", reportPath]
+        let pipe = Pipe()
+
+        do {
+            _ = try QAMode.parse(arguments)
+            XCTFail("Expected parser failure")
+        } catch {
+            QAMode.handleParseFailure(error, arguments: arguments, standardError: pipe.fileHandleForWriting)
+        }
+        pipe.fileHandleForWriting.closeFile()
+
+        let stderr = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertTrue(stderr.contains("Invalid value 'unknown' for --qa-scene"))
+        let data = try Data(contentsOf: URL(fileURLWithPath: reportPath))
+        let report = try JSONDecoder().decode(QAFrameReport.self, from: data)
+        XCTAssertEqual(report.status, "fail")
+        XCTAssertEqual(report.passCount, 0)
+        XCTAssertEqual(report.windowCount, 0)
+        XCTAssertTrue(report.failure?.contains("Invalid value 'unknown' for --qa-scene") == true)
+    }
+
+    func testParseFailureUsesLastUsableRawReportPathAndSkipsMalformedPair() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reportPath = directory.appendingPathComponent("usable.json").path
+        let arguments = ["--qa-report", reportPath, "--qa-report", "--qa-scene"]
+        let pipe = Pipe()
+
+        XCTAssertEqual(QAMode.rawReportPath(in: arguments), reportPath)
+        QAMode.handleParseFailure(
+            QAError.missingValue("--qa-report"),
+            arguments: ["--qa-report", "--qa-scene"],
+            standardError: pipe.fileHandleForWriting
+        )
+        pipe.fileHandleForWriting.closeFile()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: reportPath))
+        XCTAssertTrue(
+            String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .contains("Missing value for --qa-report")
+        )
+    }
+
     func testNonQAArgumentsDoNotRequestAutomation() throws {
         XCTAssertNil(try QAMode.parseIfRequested(["-ApplePersistenceIgnoreState", "YES"]))
         XCTAssertNotNil(try QAMode.parseIfRequested(["--benchmark"]))
@@ -198,6 +247,10 @@ final class QAModeTests: XCTestCase {
 
     func testProbeEvaluationAppliesEveryRequiredGate() {
         let steps = TraversalStepMetrics(voxelSteps: 1, sdfSteps: 1, gaussianSamples: 1)
+        let voxelOnly = TraversalStepMetrics(voxelSteps: 1, sdfSteps: 0, gaussianSamples: 0)
+        let sdfOnly = TraversalStepMetrics(voxelSteps: 0, sdfSteps: 1, gaussianSamples: 0)
+        let gaussianOnly = TraversalStepMetrics(voxelSteps: 0, sdfSteps: 0, gaussianSamples: 1)
+        let empty = TraversalStepMetrics(voxelSteps: 0, sdfSteps: 0, gaussianSamples: 0)
         let passing: [String] = [
             ProbeEnvelope.evaluated(
                 probe: "shadow", device: "GPU",
@@ -205,7 +258,7 @@ final class QAModeTests: XCTestCase {
             ).status,
             ProbeEnvelope.evaluated(
                 probe: "mixed", device: "GPU",
-                metrics: MixedProbeMetrics(mixedLeafVoxel: true, mixedLeafSDFRefs: 2, wrongNearestHits: 0, maxHitDistanceError: 0.002, voxelOnly: steps, sdfOnly: steps, gaussianOnly: steps, mixed: steps, empty: steps)
+                metrics: MixedProbeMetrics(mixedLeafVoxel: true, mixedLeafSDFRefs: 2, wrongNearestHits: 0, maxHitDistanceError: 0.002, voxelOnly: voxelOnly, sdfOnly: sdfOnly, gaussianOnly: gaussianOnly, mixed: steps, empty: empty)
             ).status,
             ProbeEnvelope.evaluated(
                 probe: "budgets", device: "GPU",
@@ -238,12 +291,20 @@ final class QAModeTests: XCTestCase {
                 metrics: ShadowProbeMetrics(sampleCount: 10_380, legacyMismatch: 404, falseShadows: 1, missedShadows: 0, maxHitDistanceError: 0)
             ).status,
             ProbeEnvelope.evaluated(
+                probe: "mixed", device: "GPU",
+                metrics: MixedProbeMetrics(mixedLeafVoxel: true, mixedLeafSDFRefs: 2, wrongNearestHits: 0, maxHitDistanceError: 0, voxelOnly: steps, sdfOnly: sdfOnly, gaussianOnly: gaussianOnly, mixed: steps, empty: empty)
+            ).status,
+            ProbeEnvelope.evaluated(
                 probe: "budgets", device: "GPU",
                 metrics: BudgetProbeMetrics(overflowCount: 0, smoothSteps: 25, creatureSteps: 32, fractalSteps: 48, fractalIterations: 8, hierarchicalSteps: 4_096, surfaceLights: 4, localShadowRays: 1, sunShadowRays: 1, secondarySceneRays: 1)
             ).status,
             ProbeEnvelope.evaluated(
                 probe: "sdf", device: "GPU",
                 metrics: SDFProbeMetrics(maxDistanceError: 0, maxNormalAngleDegrees: 0, maxNormalLengthError: 0, nonFiniteCount: 0, negativeExteriorStepCount: 0, fractalCoverage: 0.10)
+            ).status,
+            ProbeEnvelope.evaluated(
+                probe: "sdf", device: "GPU",
+                metrics: SDFProbeMetrics(maxDistanceError: 0, maxNormalAngleDegrees: 0, maxNormalLengthError: 0, nonFiniteCount: 0, negativeExteriorStepCount: 0, fractalCoverage: 0)
             ).status,
             ProbeEnvelope.evaluated(
                 probe: "volume", device: "GPU",
@@ -260,7 +321,7 @@ final class QAModeTests: XCTestCase {
         ]
 
         XCTAssertEqual(passing, Array(repeating: "pass", count: 8))
-        XCTAssertEqual(failures, Array(repeating: "fail", count: 6))
+        XCTAssertEqual(failures, Array(repeating: "fail", count: 8))
     }
 
     func testRendererErrorsKeepTheMetalDiagnostic() {

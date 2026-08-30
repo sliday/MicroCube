@@ -8,6 +8,7 @@ final class ShadowTraversalTests: XCTestCase {
 
         XCTAssertEqual(report.sampleCount, 10_380)
         XCTAssertEqual(report.legacyMismatch, 404)
+        XCTAssertEqual(report.referenceMismatch, 0)
         XCTAssertEqual(report.falseShadows, 0)
         XCTAssertEqual(report.missedShadows, 0)
         XCTAssertLessThanOrEqual(report.maxHitDistanceError, 0.002)
@@ -121,10 +122,14 @@ final class ShadowTraversalTests: XCTestCase {
             float3 origin(0.5f, y, gid < 1404u ? 0.5f : 3.5f);
             TraceHit legacyHit;
             TraceHit exactHit;
+            TraceHit referenceHit;
             bool legacy = traceVolume(volume, origin, float3(1.0f, 0.0f, 0.0f), 32.0f, 1u, legacyHit);
             bool exact = traceOcclusionExact(volume, origin, float3(1.0f, 0.0f, 0.0f), 32.0f, exactHit);
+            bool reference = traceOcclusionReference(
+                volume, origin, float3(1.0f, 0.0f, 0.0f), 32.0f, referenceHit
+            );
             output[gid] = float4(legacy ? 1.0f : 0.0f, exact ? 1.0f : 0.0f,
-                                 exact ? exactHit.t : -1.0f, 0.0f);
+                                 exact ? exactHit.t : -1.0f, reference ? 1.0f : 0.0f);
         }
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
@@ -197,8 +202,10 @@ final class ShadowTraversalTests: XCTestCase {
             let value = values[index]
             let legacy = value.x != 0
             let exact = value.y != 0
+            let measuredReference = value.w != 0
             let reference = (404..<1404).contains(index)
             if legacy != reference { report.legacyMismatch += 1 }
+            if measuredReference != reference { report.referenceMismatch += 1 }
             if exact && !reference { report.falseShadows += 1 }
             if !exact && reference { report.missedShadows += 1 }
             if reference && exact {
@@ -311,6 +318,7 @@ final class ShadowTraversalTests: XCTestCase {
 private struct ShadowBatchReport {
     let sampleCount: Int
     var legacyMismatch = 0
+    var referenceMismatch = 0
     var falseShadows = 0
     var missedShadows = 0
     var maxHitDistanceError: Float = 0
