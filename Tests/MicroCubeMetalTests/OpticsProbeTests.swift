@@ -15,6 +15,10 @@ final class OpticsProbeTests: XCTestCase {
         XCTAssertEqual(try runOpticsProbe().recursiveSecondaryRayCount, 0)
     }
 
+    func testSecondaryOpticalLaunchInstrumentationCountsRecursion() throws {
+        XCTAssertEqual(try runOpticsProbe().instrumentedSecondaryLaunchCount, 1)
+    }
+
     func testTotalInternalReflectionDoesNotLaunchAnInteriorSecondaryRay() throws {
         let report = try runOpticsProbe()
         XCTAssertEqual(report.tirSecondaryRayCount, 0)
@@ -31,19 +35,26 @@ final class OpticsProbeTests: XCTestCase {
             if (gid != 0u) return;
             OpticalPath externalPath;
             OpticalPath internalPath;
+            OpticalRayBudget primaryBudget = {0u, 0u};
+            OpticalRayBudget instrumentedSecondaryBudget = {1u, 0u};
+            OpticalRayBudget secondaryShadeBudget = {1u, 0u};
             float3 origin(-3.0f, 0.25f, 0.0f);
             float3 direction = normalize(float3(1.0f, 0.0f, 0.0f));
             bool crossed = traceOpticalSphere(
-                origin, direction, float3(0.0f), 1.0f, 1.5f, float3(0.18f, 0.07f, 0.03f), externalPath
+                origin, direction, float3(0.0f), 1.0f, 1.5f, float3(0.18f, 0.07f, 0.03f), externalPath, primaryBudget
             );
             bool totalInternalReflection = traceOpticalSphere(
                 float3(0.0f, 0.8f, 0.0f), normalize(float3(1.0f, 0.0f, 0.0f)),
-                float3(0.0f), 1.0f, 1.5f, float3(0.18f, 0.07f, 0.03f), internalPath
+                float3(0.0f), 1.0f, 1.5f, float3(0.18f, 0.07f, 0.03f), internalPath, primaryBudget
             );
-            uint secondaryOpticalRays = 0u;
+            OpticalPath instrumentedPath;
+            bool instrumentedSecondaryLaunch = traceOpticalSphere(
+                origin, direction, float3(0.0f), 1.0f, 1.5f, float3(0.18f, 0.07f, 0.03f),
+                instrumentedPath, instrumentedSecondaryBudget
+            );
             shadeSecondaryHit(
                 float3(0.0f), float3(0.0f, 1.0f, 0.0f), float3(1.0f),
-                float3(0.0f, 1.0f, 0.0f), 0.42f, lights, scene, 0.0f, secondaryOpticalRays
+                float3(0.0f, 1.0f, 0.0f), 0.42f, lights, scene, 0.0f, secondaryShadeBudget
             );
             output[0] = crossed ? externalPath.entryDirection.x : NAN;
             output[1] = crossed ? externalPath.entryDirection.y : NAN;
@@ -56,13 +67,15 @@ final class OpticsProbeTests: XCTestCase {
             output[8] = crossed ? externalPath.reflectionDirection.z : NAN;
             output[9] = totalInternalReflection && internalPath.totalInternalReflection != 0u ? 0.0f : 1.0f;
             output[10] = totalInternalReflection ? float(internalPath.canTraceSecondary) : 1.0f;
-            output[11] = float(secondaryOpticalRays);
+            output[11] = float(secondaryShadeBudget.recursiveSecondaryRayCount);
             output[12] = totalInternalReflection ? length(internalPath.secondaryOrigin) : 0.0f;
+            output[13] = instrumentedSecondaryLaunch
+                ? float(instrumentedSecondaryBudget.recursiveSecondaryRayCount) : NAN;
         }
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
         let pipeline = try MetalProbeHarness.makePipeline(name: "probeOptics", library: library, device: device)
-        let output = try XCTUnwrap(device.makeBuffer(length: 13 * MemoryLayout<Float>.stride, options: .storageModeShared))
+        let output = try XCTUnwrap(device.makeBuffer(length: 14 * MemoryLayout<Float>.stride, options: .storageModeShared))
         let lights = try XCTUnwrap(device.makeBuffer(length: MemoryLayout<Light>.stride, options: .storageModeShared))
         var scene = SceneUniforms(counts: .zero, grid: .zero, fog: .zero, budgets: .zero)
         let queue = try XCTUnwrap(device.makeCommandQueue())
@@ -78,7 +91,7 @@ final class OpticsProbeTests: XCTestCase {
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
 
-        let values = output.contents().bindMemory(to: Float.self, capacity: 13)
+        let values = output.contents().bindMemory(to: Float.self, capacity: 14)
         let direction = SIMD3<Float>(1, 0, 0)
         let entryNormal = SIMD3<Float>(-sqrt(1 - 0.25 * 0.25), 0.25, 0)
         let expectedEntry = refract(direction, normal: entryNormal, eta: 1 / 1.5)
@@ -96,7 +109,8 @@ final class OpticsProbeTests: XCTestCase {
             tirFailureCount: Int(values[9]),
             tirSecondaryRayCount: Int(values[10]),
             recursiveSecondaryRayCount: Int(values[11]),
-            tirSecondaryOriginDistance: values[12]
+            tirSecondaryOriginDistance: values[12],
+            instrumentedSecondaryLaunchCount: Int(values[13])
         )
     }
 
@@ -117,5 +131,6 @@ final class OpticsProbeTests: XCTestCase {
         let tirSecondaryRayCount: Int
         let recursiveSecondaryRayCount: Int
         let tirSecondaryOriginDistance: Float
+        let instrumentedSecondaryLaunchCount: Int
     }
 }

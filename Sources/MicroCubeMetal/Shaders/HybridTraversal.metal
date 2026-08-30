@@ -116,13 +116,22 @@ struct OpticalPath {
     uint canTraceSecondary;
 };
 
+struct OpticalRayBudget {
+    uint rayDepth;
+    uint recursiveSecondaryRayCount;
+};
+
 inline bool traceOpticalSphere(float3 origin,
                                float3 direction,
                                float3 center,
                                float radius,
                                float indexOfRefraction,
                                float3 absorption,
-                               thread OpticalPath &path) {
+                               thread OpticalPath &path,
+                               thread OpticalRayBudget &opticalBudget) {
+    if (opticalBudget.rayDepth != 0u) {
+        ++opticalBudget.recursiveSecondaryRayCount;
+    }
     float3 offset = origin - center;
     float projection = dot(offset, direction);
     float discriminant = projection * projection - dot(offset, offset) + radius * radius;
@@ -206,7 +215,7 @@ inline float3 shadeSecondaryLighting(float3 point,
                                      float3 baseColor,
                                      float3 sunDirection,
                                      float ambient,
-                                     thread uint &opticalRayCount) {
+                                     thread OpticalRayBudget &opticalBudget) {
     float direct = max(dot(normal, sunDirection), 0.0f);
     return baseColor * (ambient + (1.0f - ambient) * direct);
 }

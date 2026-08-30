@@ -282,9 +282,9 @@ inline float3 shadeSecondaryHit(float3 point,
                                 device const Light *lights,
                                 constant SceneUniforms &scene,
                                 float time,
-                                thread uint &secondaryOpticalRays) {
+                                thread OpticalRayBudget &secondaryOpticalBudget) {
     float3 color = shadeSecondaryLighting(
-        point, normal, baseColor, sunDirection, ambient, secondaryOpticalRays
+        point, normal, baseColor, sunDirection, ambient, secondaryOpticalBudget
     );
     for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
         Light source = lights[index];
@@ -409,10 +409,11 @@ kernel void raycastHybrid(
         }
         if (isGlass) {
             OpticalPath path;
+            OpticalRayBudget primaryOpticalBudget = {0u, 0u};
             Material material = materials[materialIndex];
             if (traceOpticalSphere(
                 origin, direction, hit.opticalSphere.xyz, hit.opticalSphere.w,
-                material.opticalAbsorptionIOR.w, material.opticalAbsorptionIOR.xyz, path
+                material.opticalAbsorptionIOR.w, material.opticalAbsorptionIOR.xyz, path, primaryOpticalBudget
             )) {
                 if (path.totalInternalReflection != 0u || path.canTraceSecondary == 0u) {
                     color = skyColor(path.reflectionDirection, sunDirection);
@@ -431,11 +432,11 @@ kernel void raycastHybrid(
                         float3 secondaryBase = secondaryHit.primitiveKind == 0u
                             ? kPalette[min(secondaryHit.material, 42u)]
                             : materials[secondaryMaterial].baseColorRoughness.xyz;
-                        uint secondaryOpticalRays = 0u;
+                        OpticalRayBudget secondaryOpticalBudget = {1u, 0u};
                         transmittedColor = shadeSecondaryHit(
                             path.secondaryOrigin + path.exitDirection * secondaryHit.t, secondaryHit.normal,
                             secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w, lights, scene,
-                            uniforms.cameraPositionAndTime.w, secondaryOpticalRays
+                            uniforms.cameraPositionAndTime.w, secondaryOpticalBudget
                         );
                         if (secondaryHit.primitiveKind != 0u) {
                             transmittedColor += materials[secondaryMaterial].emissionMetalness.xyz;
@@ -464,11 +465,11 @@ kernel void raycastHybrid(
                 float3 secondaryBase = secondaryHit.primitiveKind == 0u
                     ? kPalette[min(secondaryHit.material, 42u)]
                     : materials[secondaryMaterial].baseColorRoughness.xyz;
-                uint secondaryOpticalRays = 0u;
+                OpticalRayBudget secondaryOpticalBudget = {1u, 0u};
                 reflectionColor = shadeSecondaryHit(
                     point + reflectionDirection * secondaryHit.t, secondaryHit.normal,
                     secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w, lights, scene,
-                    uniforms.cameraPositionAndTime.w, secondaryOpticalRays
+                    uniforms.cameraPositionAndTime.w, secondaryOpticalBudget
                 );
                 if (secondaryHit.primitiveKind != 0u) {
                     reflectionColor += materials[secondaryMaterial].emissionMetalness.xyz;
