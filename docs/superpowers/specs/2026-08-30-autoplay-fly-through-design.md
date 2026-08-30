@@ -1,7 +1,7 @@
 # MicroCube Metal Automatic Fly-Through Design
 
 **Date:** 2026-08-30
-**Status:** Draft for written review
+**Status:** Approved
 **Decision:** Use a renderer-clock tour that yields to the first user interaction.
 
 ## Purpose

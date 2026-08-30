@@ -151,6 +151,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let raycastPipeline: MTLComputePipelineState
     private let raycastThreadgroupSize: MTLSize
     private let counterBuffers: [MTLBuffer]
+    private let autoTourUpdate: (AutoTourSample) -> Void
+    private let autoTourFailure: (AutoTourSample) -> Void
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
     private let stateLock = NSLock()
 
@@ -165,6 +167,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var sceneTime = 0.0
     private var latestCounters: FrameCounters?
     private var counterSlotsInUse = [false, false, false]
+    private var autoTourController: AutoTourController
+    private var presentedAutoTourSectionID: Int?
     private var drawableSizeDirty = true
     private var lastFrameTime = CACurrentMediaTime()
     private var lastHUDTime = 0.0
@@ -176,6 +180,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         metalView: MTKView,
         input: InputState,
         qaScene: QAMode.Scene? = nil,
+        autoTourPolicy: AutoTourPolicy = .disabled,
+        autoTourUpdate: @escaping (AutoTourSample) -> Void = { _ in },
+        autoTourFailure: @escaping (AutoTourSample) -> Void = { _ in },
         hudUpdate: @escaping (String) -> Void
     ) throws {
         guard let device = metalView.device ?? MTLCreateSystemDefaultDevice() else {
@@ -244,6 +251,8 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         self.input = input
         self.hudUpdate = hudUpdate
+        self.autoTourUpdate = autoTourUpdate
+        self.autoTourFailure = autoTourFailure
         self.commandQueue = commandQueue
         self.volumeTexture = volumeTexture
         self.sceneResources = sceneResources
@@ -256,6 +265,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.raycastPipeline = raycastPipeline
         self.raycastThreadgroupSize = Renderer.make2DThreadgroupSize(for: raycastPipeline)
         self.counterBuffers = counterBuffers
+        self.autoTourController = AutoTourController(
+            policy: autoTourPolicy,
+            startTime: CACurrentMediaTime()
+        )
         self.metalView = metalView
         super.init()
 
@@ -268,6 +281,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         metalView.presentsWithTransaction = false
 
         try initializeWorld(terrainFixture: Self.terrainFixture(for: qaScene))
+        if let sample = autoTourController.restart(at: CACurrentMediaTime()) {
+            applyAutoTourPose(sample)
+            presentedAutoTourSectionID = sample.sectionID
+        }
     }
 
     static func makeScene(for qaScene: QAMode.Scene) throws -> SceneData {
@@ -320,6 +337,48 @@ final class Renderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
     }
 
+    func currentAutoTourState() -> AutoTourState {
+        stateLock.lock()
+        let state = autoTourController.state
+        stateLock.unlock()
+        return state
+    }
+
+    func currentAutoTourSample() -> AutoTourSample? {
+        stateLock.lock()
+        let sample = autoTourController.lastSample
+        stateLock.unlock()
+        return sample
+    }
+
+    func currentCameraPose() -> (position: SIMD3<Float>, yaw: Float, pitch: Float) {
+        stateLock.lock()
+        let pose = (cameraPosition, yaw, pitch)
+        stateLock.unlock()
+        return pose
+    }
+
+    func takeControl() -> AutoTourSample? {
+        stateLock.lock()
+        let sample = autoTourController.takeControl()
+        if let sample {
+            applyAutoTourPose(sample)
+        }
+        stateLock.unlock()
+        return sample
+    }
+
+    func restartAutoTour(at time: CFTimeInterval = CACurrentMediaTime()) -> AutoTourSample? {
+        stateLock.lock()
+        let sample = autoTourController.restart(at: time)
+        if let sample {
+            applyAutoTourPose(sample)
+            presentedAutoTourSectionID = sample.sectionID
+        }
+        stateLock.unlock()
+        return sample
+    }
+
     func setRenderState(_ state: RenderState) {
         stateLock.lock()
         renderState = state
@@ -364,7 +423,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
         let deltaTime = qaFrame == nil ? min(0.05, max(0.0, now - lastFrameTime)) : 0
         lastFrameTime = now
-        let state = currentRenderState()
+        var state = currentRenderState()
         if let (plan, frame) = qaFrame {
             sceneTime = plan.time(forFrame: frame)
         } else if !state.paused {
@@ -373,7 +432,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         if let (plan, _) = qaFrame {
             updateQADrawableSize(view, plan: plan)
         } else {
-            updateCamera(deltaTime: Float(deltaTime))
+            if let sample = updateAutoTour(at: now) {
+                state.evidenceView = sample.evidenceView
+            } else {
+                updateCamera(deltaTime: Float(deltaTime))
+            }
             updateFrameRate(deltaTime: deltaTime)
             adjustRenderScaleIfNeeded()
             updateDrawableSize(view)
@@ -867,6 +930,35 @@ final class Renderer: NSObject, MTKViewDelegate {
         latestCounters = aggregationEnabled ? counters : nil
         counterSlotsInUse[slot] = false
         stateLock.unlock()
+    }
+
+    func updateAutoTour(at time: CFTimeInterval) -> AutoTourSample? {
+        stateLock.lock()
+        let sample = autoTourController.sample(at: time)
+        let failure = autoTourController.takeFailure()
+        let lastSample = autoTourController.lastSample
+        var sectionChanged = false
+        if let sample {
+            applyAutoTourPose(sample)
+            sectionChanged = presentedAutoTourSectionID != sample.sectionID
+            presentedAutoTourSectionID = sample.sectionID
+        }
+        stateLock.unlock()
+        if let sample, sectionChanged {
+            autoTourUpdate(sample)
+        } else if let failure {
+            hudUpdate(failure)
+            if let lastSample {
+                autoTourFailure(lastSample)
+            }
+        }
+        return sample
+    }
+
+    private func applyAutoTourPose(_ sample: AutoTourSample) {
+        cameraPosition = sample.cameraPosition
+        yaw = sample.yaw
+        pitch = sample.pitch
     }
 
     private func updateCamera(deltaTime: Float) {

@@ -23,6 +23,8 @@ Build the release app bundle and open its single window:
 ./scripts/run.sh
 ```
 
+A normal launch starts a 48-second camera tour through the terrain, fog creatures, moving lights, mixed traversal views, glass, and SDF forms. Move the pointer, click, press a movement key, or use a View command to take control at the current camera pose. Choose **View > Restart Auto Tour** to replay it. macOS Reduce Motion keeps the opening camera static.
+
 Run the executable through Swift Package Manager during development:
 
 ```sh

@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let qaMode: QAMode?
     private let startupError: String?
     private let automationRequested: Bool
+    private let autoTourPolicy: AutoTourPolicy
     private let thermalStateBefore: String
     private(set) var exitStatus: Int32 = 0
     private var automationFinished = false
@@ -92,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     var onRenderStateChanged: ((RenderState) -> Void)?
     var accessibilityAnnouncementHandler: (String) -> Void
+    var controlLegendText: String { legendLabel?.stringValue ?? "" }
 
     init(
         accessibilityDisplayOptionsProvider: @escaping () -> AccessibilityDisplayOptions = { .current },
@@ -104,6 +106,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self.qaMode = qaMode
         self.startupError = startupError
         self.automationRequested = automationRequested || qaMode != nil || startupError != nil
+        self.autoTourPolicy = AutoTourPolicy.launch(
+            automationRequested: automationRequested,
+            hasQAMode: qaMode != nil,
+            hasStartupError: startupError != nil,
+            reduceMotion: accessibilityDisplayOptionsProvider().reduceMotion,
+            hasMetalDevice: MTLCreateSystemDefaultDevice() != nil
+        )
         thermalStateBefore = Self.thermalStateName(ProcessInfo.processInfo.thermalState)
         accessibilityAnnouncementHandler = { announcement in
             accessibilityAnnouncementPoster(announcement)
@@ -195,6 +204,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             keyEquivalent: ""
         )
         hudItem.target = self
+        if autoTourPolicy != .disabled {
+            viewMenu.addItem(.separator())
+            let restartItem = viewMenu.addItem(
+                withTitle: "Restart Auto Tour",
+                action: #selector(restartAutoTour(_:)),
+                keyEquivalent: ""
+            )
+            restartItem.target = self
+            restartItem.isEnabled = autoTourPolicy == .enabled
+        }
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 
@@ -273,6 +292,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard self?.qaMode == nil else { return true }
             return metalView?.handleRendererShortcut(event) ?? false
         }
+        if autoTourPolicy == .enabled {
+            metalView.onUserInteraction = { [weak self] in
+                self?.takeControl() ?? false
+            }
+        }
         container.addSubview(metalView)
         self.metalView = metalView
 
@@ -295,6 +319,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 metalView: metalView,
                 input: input,
                 qaScene: qaMode?.scene,
+                autoTourPolicy: autoTourPolicy,
+                autoTourUpdate: { [weak self] sample in
+                    self?.setAutoTourLegend(sample)
+                },
+                autoTourFailure: { [weak self] sample in
+                    self?.handleAutoTourFailure(sample)
+                },
                 hudUpdate: { [weak self] text in
                     self?.setHUDText(text)
                 }
@@ -327,6 +358,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             renderState.paused = true
         }
         setRendererState()
+        switch autoTourPolicy {
+        case .enabled:
+            metalView.armUserInteractionNotification()
+            if let sample = renderer.currentAutoTourSample() {
+                setAutoTourLegend(sample)
+                accessibilityAnnouncementHandler("Automatic tour started.")
+            }
+        case .reduceMotion:
+            setControlLegendText("AUTO TOUR OFF · REDUCE MOTION")
+        case .disabled:
+            break
+        }
 
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(metalView)
@@ -462,7 +505,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func setCaptureLegend(captured: Bool) {
-        legendLabel?.stringValue = captureLegend(captured: captured)
+        setControlLegendText(captureLegend(captured: captured))
+    }
+
+    private func setAutoTourLegend(_ sample: AutoTourSample) {
+        let text = "AUTO TOUR · \(sample.sectionTitle)\nMOVE OR CLICK TO TAKE CONTROL"
+        let update = { [weak self] in
+            guard let self,
+                  self.renderer?.currentAutoTourState() == .active,
+                  self.renderer?.currentAutoTourSample()?.sectionID == sample.sectionID else { return }
+            self.legendLabel?.stringValue = text
+        }
+        if Thread.isMainThread {
+            update()
+        } else {
+            DispatchQueue.main.async(execute: update)
+        }
+    }
+
+    private func setControlLegendText(_ text: String) {
+        if Thread.isMainThread {
+            legendLabel?.stringValue = text
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.legendLabel?.stringValue = text
+        }
     }
 
     private func captureLegend(captured: Bool) -> String {
@@ -524,6 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @discardableResult
     func handleRenderAction(_ action: RenderAction) -> Bool {
+        takeControl()
         let consumed = renderState.apply(action)
         explainerPanel?.apply(renderState: renderState)
         setRendererState()
@@ -579,8 +648,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateExplainerLayout()
     }
 
+    @discardableResult
+    func takeControl() -> Bool {
+        guard let sample = renderer?.takeControl() else { return false }
+        renderState.evidenceView = sample.evidenceView
+        explainerPanel?.apply(renderState: renderState)
+        setRendererState()
+        metalView?.disarmUserInteractionNotification()
+        setCaptureLegend(captured: metalView?.isMouseCaptured ?? false)
+        accessibilityAnnouncementHandler("Automatic tour stopped. You have control.")
+        onRenderStateChanged?(renderState)
+        return true
+    }
+
+    private func handleAutoTourFailure(_ sample: AutoTourSample) {
+        let update = { [weak self] in
+            guard let self, self.renderer?.currentAutoTourState() == .userControlled else { return }
+            self.renderState.evidenceView = sample.evidenceView
+            self.explainerPanel?.apply(renderState: self.renderState)
+            self.setRendererState()
+            self.metalView?.disarmUserInteractionNotification()
+            self.setCaptureLegend(captured: self.metalView?.isMouseCaptured ?? false)
+            self.onRenderStateChanged?(self.renderState)
+        }
+        if Thread.isMainThread {
+            update()
+        } else {
+            DispatchQueue.main.async(execute: update)
+        }
+    }
+
+    @objc func restartAutoTour(_ sender: Any?) {
+        guard let sample = renderer?.restartAutoTour() else { return }
+        metalView?.releaseMouse()
+        metalView?.armUserInteractionNotification()
+        renderState.evidenceView = sample.evidenceView
+        explainerPanel?.apply(renderState: renderState)
+        setRendererState()
+        setAutoTourLegend(sample)
+        accessibilityAnnouncementHandler("Automatic tour started.")
+        onRenderStateChanged?(renderState)
+    }
+
     @objc private func toggleFullScreen(_ sender: Any?) {
-        window?.toggleFullScreen(sender)
+        handleRenderAction(.toggleFullscreen)
     }
 
     @objc private func toggleExplainer(_ sender: Any?) {

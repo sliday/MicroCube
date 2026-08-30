@@ -19,8 +19,10 @@ final class MetalInputView: MTKView {
     let input: InputState
     var onRenderAction: ((RenderAction) -> Bool)?
     var onCaptureChanged: ((Bool) -> Void)?
+    var onUserInteraction: (() -> Bool)?
 
     private(set) var isMouseCaptured = false
+    private var userInteractionNotificationArmed = false
 
     init(frame: NSRect, device: MTLDevice, input: InputState) {
         self.input = input
@@ -56,29 +58,46 @@ final class MetalInputView: MTKView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        notifyUserInteraction()
         window?.makeFirstResponder(self)
         captureMouse()
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        notifyUserInteraction()
+        window?.makeFirstResponder(self)
+        captureMouse()
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        notifyUserInteraction()
         window?.makeFirstResponder(self)
         captureMouse()
     }
 
     override func mouseMoved(with event: NSEvent) {
+        notifyUserInteraction()
         recordMouseDelta(event)
     }
 
     override func mouseDragged(with event: NSEvent) {
+        notifyUserInteraction()
         recordMouseDelta(event)
     }
 
     override func rightMouseDragged(with event: NSEvent) {
+        notifyUserInteraction()
         recordMouseDelta(event)
     }
 
     override func otherMouseDragged(with event: NSEvent) {
+        notifyUserInteraction()
         recordMouseDelta(event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        notifyUserInteraction()
+        super.scrollWheel(with: event)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -87,10 +106,12 @@ final class MetalInputView: MTKView {
         }
         switch event.keyCode {
         case KeyCode.returnKey, KeyCode.space:
+            notifyUserInteraction()
             if !isMouseCaptured && !event.isARepeat {
                 captureMouse()
             }
         case KeyCode.w, KeyCode.s, KeyCode.a, KeyCode.d, KeyCode.q, KeyCode.e:
+            notifyUserInteraction()
             input.setKey(event.keyCode, down: true)
         default:
             super.keyDown(with: event)
@@ -107,6 +128,7 @@ final class MetalInputView: MTKView {
     }
 
     override func flagsChanged(with event: NSEvent) {
+        notifyUserInteraction()
         input.setSpeedBoost(event.modifierFlags.contains(.shift))
     }
 
@@ -118,6 +140,7 @@ final class MetalInputView: MTKView {
               ) else {
             return false
         }
+        notifyUserInteraction()
         let handled = onRenderAction?(action) ?? false
         if action == .escape && !handled {
             releaseMouse()
@@ -146,6 +169,14 @@ final class MetalInputView: MTKView {
         onCaptureChanged?(false)
     }
 
+    func armUserInteractionNotification() {
+        userInteractionNotificationArmed = true
+    }
+
+    func disarmUserInteractionNotification() {
+        userInteractionNotificationArmed = false
+    }
+
     private func recordMouseDelta(_ event: NSEvent) {
         guard isMouseCaptured else { return }
         input.addMouseDelta(x: Float(event.deltaX), y: Float(event.deltaY))
@@ -158,7 +189,13 @@ final class MetalInputView: MTKView {
         input.setSpeedBoost(false)
     }
 
+    private func notifyUserInteraction() {
+        guard userInteractionNotificationArmed, onUserInteraction?() == true else { return }
+        userInteractionNotificationArmed = false
+    }
+
     @objc private func windowDidResignKey() {
+        notifyUserInteraction()
         releaseMouse()
     }
 
