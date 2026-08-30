@@ -3,6 +3,124 @@ import XCTest
 @testable import MicroCubeMetal
 
 final class UIStateTests: XCTestCase {
+    func testPanelLayoutBreakpointAndHUDClearance() {
+        XCTAssertEqual(ExplainerLayout.state(windowWidth: 1099), .collapsed)
+        XCTAssertEqual(ExplainerLayout.state(windowWidth: 1100), .expanded(width: 424))
+        XCTAssertEqual(ExplainerLayout.hudClearance, 16)
+    }
+
+    func testCollapsedRailOpensPanelInsideSmallWindowAndEscapeReturnsToRail() {
+        XCTAssertEqual(
+            ExplainerLayout.presentation(windowWidth: 1099, explainerVisible: false),
+            .rail
+        )
+        XCTAssertEqual(
+            ExplainerLayout.presentation(windowWidth: 1099, explainerVisible: true),
+            .panel
+        )
+        XCTAssertEqual(
+            ExplainerLayout.presentation(windowWidth: 1100, explainerVisible: false),
+            .hidden
+        )
+    }
+
+    func testPanelProvidesFiveFocusableEvidenceControlsAndFocusChain() {
+        let panel = ExplainerPanel(copy: "Quoted copy", actionHandler: { _ in })
+
+        XCTAssertEqual(panel.evidenceButtons.count, 5)
+        XCTAssertTrue(panel.evidenceButtons.allSatisfy(\.acceptsFirstResponder))
+        for (button, nextButton) in zip(panel.evidenceButtons, panel.evidenceButtons.dropFirst()) {
+            XCTAssertTrue(button.nextKeyView === nextButton)
+        }
+    }
+
+    func testCloseAndCollapsedRailUseAccessibleLabelsAndActions() {
+        var actions = [RenderAction]()
+        let panel = ExplainerPanel(copy: "Quoted copy", actionHandler: { actions.append($0) })
+        let rail = ExplainerPanel.makeCollapsedRail(actionHandler: { actions.append(.toggleExplainer) })
+
+        panel.closeButton.performClick(nil)
+        rail.performClick(nil)
+
+        XCTAssertEqual(panel.closeButton.accessibilityLabel(), "Close Why Rays explainer")
+        XCTAssertEqual(rail.accessibilityLabel(), "Open Why Rays explainer")
+        XCTAssertTrue(rail.acceptsFirstResponder)
+        XCTAssertEqual(actions, [.toggleExplainer, .toggleExplainer])
+    }
+
+    func testPanelUsesThirteenPointBodyTextAndRequiredDisclosures() {
+        let panel = ExplainerPanel(copy: "Quoted copy", actionHandler: { _ in })
+
+        XCTAssertFalse(panel.bodyTextFields.isEmpty)
+        XCTAssertTrue(panel.bodyTextFields.allSatisfy { ($0.font?.pointSize ?? 0) >= 13 })
+        XCTAssertEqual(Set(panel.disclosureLabels.map(\.stringValue)), Set([
+            "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO",
+            "SOURCE CLAIM · NOT A RESULT FROM THIS MAC APP",
+            "CURRENT MAC APP · 1 HYBRID IMAGE KERNEL + 1 VOLUME LIGHT KERNEL",
+            "CONCEPT IN THIS MAC DEMO · NO PHYSICS OR AUDIO SYSTEM RUNS HERE",
+        ]))
+    }
+
+    func testQuotedPassagesCarryAdjacentSourceCurrentAndConceptDisclosures() throws {
+        let panel = ExplainerPanel(copy: try ExplainerCopy.text(), actionHandler: { _ in })
+
+        XCTAssertEqual(panel.passageDisclosureTexts, [
+            [
+                "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO",
+                "CURRENT MAC APP · 1 HYBRID IMAGE KERNEL + 1 VOLUME LIGHT KERNEL",
+            ],
+            [
+                "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO",
+                "CURRENT MAC APP · 1 HYBRID IMAGE KERNEL + 1 VOLUME LIGHT KERNEL",
+                "SOURCE CLAIM · NOT A RESULT FROM THIS MAC APP",
+            ],
+            [
+                "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO",
+                "CURRENT MAC APP · 1 HYBRID IMAGE KERNEL + 1 VOLUME LIGHT KERNEL",
+                "CONCEPT IN THIS MAC DEMO · NO PHYSICS OR AUDIO SYSTEM RUNS HERE",
+            ],
+        ])
+    }
+
+    func testPanelUsesNativeLinkFieldsWithSpecifiedTargets() throws {
+        let panel = ExplainerPanel(copy: "Quoted copy", actionHandler: { _ in })
+        let expected = [
+            "https://iquilezles.org/articles/raymarchingdf/",
+            "https://advsys.net/ken/voxlap.htm",
+            "https://www.youtube.com/watch?v=IM1Dr98f3xU",
+        ]
+
+        XCTAssertEqual(panel.sourceLinks.map(\.url.absoluteString), expected)
+        XCTAssertEqual(panel.sourceLinkFields.count, expected.count)
+        for (field, target) in zip(panel.sourceLinkFields, expected) {
+            XCTAssertTrue(field.isSelectable)
+            let link = field.attributedStringValue.attribute(
+                .link,
+                at: 0,
+                effectiveRange: nil
+            ) as? URL
+            XCTAssertEqual(link?.absoluteString, target)
+        }
+    }
+
+    func testIncreasedContrastRaisesExplainerOverlayOpacity() {
+        XCTAssertGreaterThan(
+            ExplainerAppearance.overlayAlpha(increasedContrast: true),
+            ExplainerAppearance.overlayAlpha(increasedContrast: false)
+        )
+    }
+
+    func testReduceMotionFreezesSceneStateWithoutChangingCameraInputState() {
+        var state = RenderState()
+        state.apply(.evidence(.grid))
+
+        let effective = effectiveRenderState(state, reduceMotion: true)
+
+        XCTAssertTrue(effective.paused)
+        XCTAssertEqual(effective.evidenceView, .grid)
+        XCTAssertEqual(effective.features, state.features)
+    }
+
     func testEvidenceKeysOnlyChangeEvidenceView() {
         var state = RenderState()
 
@@ -210,6 +328,22 @@ final class UIStateTests: XCTestCase {
         XCTAssertEqual(announcements, [
             "Scene motion paused. Camera remains active.",
             "Scene motion resumed.",
+        ])
+    }
+
+    func testEvidenceAndFeatureTransitionsUseAccessibilityAnnouncements() {
+        let delegate = AppDelegate()
+        var announcements = [String]()
+        delegate.accessibilityAnnouncementHandler = { announcements.append($0) }
+
+        delegate.handleRenderAction(.evidence(.grid))
+        delegate.handleRenderAction(.toggleFeature(.lights))
+        delegate.handleRenderAction(.toggleFeature(.lights))
+
+        XCTAssertEqual(announcements, [
+            "Evidence view changed to GRID.",
+            "Lights disabled.",
+            "Lights enabled.",
         ])
     }
 

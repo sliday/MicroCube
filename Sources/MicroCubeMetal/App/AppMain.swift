@@ -29,8 +29,16 @@ func makeHUDStatusLabel(text: String) -> NSTextField {
     return label
 }
 
+func effectiveRenderState(_ state: RenderState, reduceMotion: Bool) -> RenderState {
+    var effective = state
+    if reduceMotion {
+        effective.paused = true
+    }
+    return effective
+}
+
 @main
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let input = InputState()
     private(set) var renderState = RenderState()
     private var window: NSWindow?
@@ -39,6 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var hudOverlay: NSView?
     private weak var hudLabel: NSTextField?
     private weak var legendLabel: NSTextField?
+    private weak var explainerPanel: ExplainerPanel?
+    private weak var explainerRail: NSButton?
+    private var hudPanelClearanceConstraint: NSLayoutConstraint?
     private(set) var hudTrailingAnchor: NSLayoutXAxisAnchor?
     var onHUDTrailingAnchorReady: ((NSLayoutXAxisAnchor) -> Void)? {
         didSet {
@@ -136,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = .black
         window.center()
+        window.delegate = self
         self.window = window
 
         let container = NSView(frame: contentRect)
@@ -181,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
 
         installOverlay(in: container)
+        installExplainer(in: container)
         metalView.onCaptureChanged = { [weak self] captured in
             self?.setCaptureLegend(captured: captured)
         }
@@ -199,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.renderer = renderer
         metalView.delegate = renderer
-        renderer.setRenderState(renderState)
+        setRendererState()
 
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(metalView)
@@ -252,6 +265,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onHUDTrailingAnchorReady?(overlay.trailingAnchor)
     }
 
+    private func installExplainer(in container: NSView) {
+        let copy = (try? ExplainerCopy.text()) ?? "English explainer copy is unavailable."
+        let panel = ExplainerPanel(copy: copy) { [weak self] action in
+            self?.handleRenderAction(action)
+        }
+        let rail = ExplainerPanel.makeCollapsedRail { [weak self] in
+            self?.handleRenderAction(.toggleExplainer)
+        }
+        panel.isHidden = true
+        rail.isHidden = true
+        container.addSubview(panel, positioned: .above, relativeTo: metalView)
+        container.addSubview(rail, positioned: .above, relativeTo: panel)
+        explainerPanel = panel
+        explainerRail = rail
+
+        NSLayoutConstraint.activate([
+            panel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            panel.topAnchor.constraint(equalTo: container.topAnchor),
+            panel.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            panel.widthAnchor.constraint(equalToConstant: 424),
+            rail.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            rail.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
+            rail.widthAnchor.constraint(equalToConstant: 126),
+            rail.heightAnchor.constraint(equalToConstant: 34),
+        ])
+
+        onHUDTrailingAnchorReady = { [weak self, weak panel] trailingAnchor in
+            guard let self, let panel else { return }
+            hudPanelClearanceConstraint?.isActive = false
+            hudPanelClearanceConstraint = trailingAnchor.constraint(
+                lessThanOrEqualTo: panel.leadingAnchor,
+                constant: -ExplainerLayout.hudClearance
+            )
+            updateExplainerLayout()
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(accessibilityDisplayOptionsDidChange),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
+        updateExplainerLayout()
+    }
+
     private func installMetalUnavailableLabel(in container: NSView) {
         let label = NSTextField(labelWithString: "MicroCube Metal requires a Metal-capable Mac.")
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -285,6 +342,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "\(state)   1–5  Views   G/K/L/O/X  Features   P  Pause   I  Explain   H  HUD   F  Fullscreen   R  Reset"
     }
 
+    private func updateExplainerLayout() {
+        guard let window else { return }
+        switch ExplainerLayout.presentation(
+            windowWidth: window.contentLayoutRect.width,
+            explainerVisible: renderState.explainerVisible
+        ) {
+        case .hidden:
+            explainerPanel?.isHidden = true
+            explainerRail?.isHidden = true
+            hudPanelClearanceConstraint?.isActive = false
+        case .rail:
+            explainerPanel?.isHidden = true
+            explainerRail?.isHidden = false
+            hudPanelClearanceConstraint?.isActive = false
+        case .panel:
+            explainerPanel?.isHidden = false
+            explainerRail?.isHidden = true
+            hudPanelClearanceConstraint?.isActive = true
+        }
+    }
+
+    private func setRendererState() {
+        renderer?.setRenderState(effectiveRenderState(
+            renderState,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        ))
+    }
+
+    private func featureName(_ feature: RenderFeatures) -> String {
+        switch feature {
+        case .gaussian: "Gaussian volumes"
+        case .shadows: "Shadows"
+        case .lights: "Lights"
+        case .optics: "Optics"
+        case .sdf: "SDF surfaces"
+        default: "Feature"
+        }
+    }
+
+    @objc private func accessibilityDisplayOptionsDidChange() {
+        explainerPanel?.updateAppearance(
+            increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        )
+        setRendererState()
+    }
+
     @discardableResult
     func handleRenderAction(_ action: RenderAction) -> Bool {
         let consumed = renderState.apply(action)
@@ -295,11 +398,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             renderer?.resetCamera()
         case .toggleHUD:
             hudOverlay?.isHidden = !renderState.hudVisible
-        case .toggleExplainer:
+            accessibilityAnnouncementHandler(renderState.hudVisible ? "HUD shown." : "HUD hidden.")
+        case .toggleExplainer, .escape:
+            updateExplainerLayout()
             if renderState.explainerVisible {
                 metalView?.releaseMouse()
+                accessibilityAnnouncementHandler("Why Rays explainer opened.")
             } else if let metalView {
                 window?.makeFirstResponder(metalView)
+                if action == .toggleExplainer || consumed {
+                    accessibilityAnnouncementHandler("Why Rays explainer closed.")
+                }
             }
         case .togglePause:
             accessibilityAnnouncementHandler(
@@ -307,12 +416,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ? "Scene motion paused. Camera remains active."
                     : "Scene motion resumed."
             )
-        default:
-            break
+        case .evidence(let view):
+            accessibilityAnnouncementHandler("Evidence view changed to \(view.title).")
+        case .toggleFeature(let feature):
+            let enabled = renderState.features.contains(feature)
+            accessibilityAnnouncementHandler("\(featureName(feature)) \(enabled ? "enabled" : "disabled").")
         }
-        renderer?.setRenderState(renderState)
+        setRendererState()
         onRenderStateChanged?(renderState)
         return consumed
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        updateExplainerLayout()
     }
 
     @objc private func toggleFullScreen(_ sender: Any?) {

@@ -10,7 +10,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "MicroCubeMetal",
-            resources: [.copy("Shaders")]
+            resources: [.copy("Shaders"), .copy("Resources")]
         ),
         .testTarget(
             name: "MicroCubeMetalTests",
