@@ -23,63 +23,56 @@ struct SceneData {
     let activeVolumeCells: [UInt32]
 
     static func makeHero() throws -> SceneData {
-        let scalePoint: (SIMD3<Float>) -> SIMD3<Float> = { point in
-            heroAnchor + (point - heroAnchor) * heroPresentationScale
+        func scalePoint(_ point: SIMD3<Float>, around center: SIMD3<Float>) -> SIMD3<Float> {
+            center + (point - center) * heroPresentationScale
         }
-        let sculptureCenter = scalePoint(SIMD3<Float>(281, 98, 293))
+        let sculptureCenter = SIMD3<Float>(281, 98, 293)
         let sculpture = SDFInstance(
-            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(274, 88, 286)), 0),
-            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(288, 108, 300)), 0),
+            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(274, 88, 286), around: sculptureCenter), 0),
+            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(288, 108, 300), around: sculptureCenter), 0),
             positionScale: SIMD4<Float>(sculptureCenter, 7 * heroPresentationScale),
             rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
             parameters: SIMD4<Float>(5, 8, 2, 0),
             metadata: SIMD4<UInt32>(0, 1, 0, 0)
         )
-        let fractalCenter = scalePoint(SIMD3<Float>(299, 98, 321))
+        let fractalCenter = SIMD3<Float>(299, 98, 321)
         let fractal = SDFInstance(
-            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(292, 86, 314)), 0),
-            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(306, 110, 328)), 0),
+            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(292, 86, 314), around: fractalCenter), 0),
+            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(306, 110, 328), around: fractalCenter), 0),
             positionScale: SIMD4<Float>(fractalCenter, 7 * heroPresentationScale),
             rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
             parameters: SIMD4<Float>(8, 0, 0, 0),
             metadata: SIMD4<UInt32>(3, 2, 0, 1)
         )
-        let glassSphereCenter = scalePoint(SIMD3<Float>(287, 111, 305))
+        let glassSphereCenter = SIMD3<Float>(287, 111, 305)
         let glassSphere = SDFInstance(
-            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(282, 106, 300)), 0),
-            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(292, 116, 310)), 0),
+            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(282, 106, 300), around: glassSphereCenter), 0),
+            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(292, 116, 310), around: glassSphereCenter), 0),
             positionScale: SIMD4<Float>(glassSphereCenter, 5 * heroPresentationScale),
             rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
             parameters: .zero,
             metadata: SIMD4<UInt32>(4, 4, 0, 8)
         )
         let creatureCenters = [
-            SIMD3<Float>(270, 96, 292),
-            SIMD3<Float>(281, 95, 300),
-            SIMD3<Float>(293, 96, 294),
-            SIMD3<Float>(275, 95, 310),
-            SIMD3<Float>(287, 96, 316),
-            SIMD3<Float>(299, 95, 308)
+            SIMD3<Float>(270, 95.44, 292),
+            SIMD3<Float>(281, 98.44, 300),
+            SIMD3<Float>(293, 104.44, 294),
+            SIMD3<Float>(275, 88.44, 310),
+            SIMD3<Float>(287, 95.44, 316),
+            SIMD3<Float>(299, 106.44, 308)
         ]
         let creatures = creatureCenters.enumerated().map { index, center in
-            let scaledCenter = scalePoint(center)
-            let lowerExtent = center.y - 12 * 0.5 - 3 * 0.32
-            let creatureCenter = SIMD3<Float>(
-                scaledCenter.x,
-                lowerExtent + 18 * 0.5 + 4.5 * 0.32,
-                scaledCenter.z
-            )
-            let scaledBoundsMin = scalePoint(SIMD3<Float>(center.x - 5, center.y - 11, center.z - 5))
-            let scaledBoundsMax = scalePoint(SIMD3<Float>(center.x + 5, center.y + 11, center.z + 5))
+            let scaledBoundsMin = scalePoint(SIMD3<Float>(center.x - 5, center.y - 11, center.z - 5), around: center)
+            let scaledBoundsMax = scalePoint(SIMD3<Float>(center.x + 5, center.y + 11, center.z + 5), around: center)
             return SDFInstance(
                 sweptBoundsMin: SIMD4<Float>(scaledBoundsMin, 0),
                 sweptBoundsMax: SIMD4<Float>(
                     scaledBoundsMax.x,
-                    max(scaledBoundsMax.y, creatureCenter.y + 18 * 0.55 + 4.5 * 0.48 + 0.22),
+                    max(scaledBoundsMax.y, center.y + 18 * 0.55 + 4.5 * 0.48 + 0.22),
                     scaledBoundsMax.z,
                     0
                 ),
-                positionScale: SIMD4<Float>(creatureCenter, 4.5),
+                positionScale: SIMD4<Float>(center, 4.5),
                 rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
                 parameters: SIMD4<Float>(18, Float(index) * 0.83, 0, 0),
                 metadata: SIMD4<UInt32>(1, 3, 1, UInt32(index + 2))
@@ -107,11 +100,11 @@ struct SceneData {
         }
         let gaussians = (0..<8).map { index -> Gaussian in
             let angle = Float(index) * (.pi * 2 / 8)
-            let center = scalePoint(SIMD3<Float>(
+            let center = SIMD3<Float>(
                 283 + cos(angle) * 9,
                 96 + Float(index % 2) * 4,
                 302 + sin(angle) * 7
-            ))
+            )
             return Gaussian(
                 localCenterSigma: SIMD4<Float>(
                     center.x,

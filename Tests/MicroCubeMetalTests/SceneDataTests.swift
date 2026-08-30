@@ -1,4 +1,5 @@
 import Metal
+import simd
 import XCTest
 @testable import MicroCubeMetal
 
@@ -52,21 +53,24 @@ final class SceneDataTests: XCTestCase {
         for (index, originalCenter) in originalCreatureCenters.enumerated() {
             let creature = creatures[index]
             let light = scene.lights[index]
-            let expectedCenter = anchor + (originalCenter - anchor) * scale
-            let originalLowerExtent = originalCenter.y - 12 * 0.5 - 3 * 0.32
-            let lowerExtent = creature.positionScale.y
-                - creature.parameters.x * 0.5
-                - creature.positionScale.w * 0.32
 
-            XCTAssertEqual(creature.positionScale.x, expectedCenter.x, accuracy: 0.0001)
-            XCTAssertEqual(creature.positionScale.z, expectedCenter.z, accuracy: 0.0001)
+            XCTAssertEqual(creature.positionScale.x, originalCenter.x, accuracy: 0.0001)
+            XCTAssertEqual(creature.positionScale.z, originalCenter.z, accuracy: 0.0001)
             XCTAssertEqual(creature.positionScale.w, 4.5, accuracy: 0.0001)
             XCTAssertEqual(creature.parameters.x, 18, accuracy: 0.0001)
-            XCTAssertEqual(lowerExtent, originalLowerExtent, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.x, creature.positionScale.x, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.y - creature.positionScale.y, 10.8, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.z, creature.positionScale.z, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.w, 33, accuracy: 0.0001)
+        }
+
+        XCTAssertLessThanOrEqual(scene.sdfInstances.count, 16)
+        XCTAssertLessThanOrEqual(scene.gaussians.count, 48)
+        XCTAssertLessThanOrEqual(scene.lights.count, 6)
+        XCTAssertLessThanOrEqual(scene.activeVolumeCells.count, 4_096)
+        for header in scene.cellHeaders {
+            XCTAssertLessThanOrEqual(Int(header.packedCounts & 0xffff), 8)
+            XCTAssertLessThanOrEqual(Int(header.packedCounts >> 16), 16)
         }
     }
 
@@ -79,35 +83,46 @@ final class SceneDataTests: XCTestCase {
             (3, SIMD3<Float>(299, 98, 321), 7, SIMD3<Float>(292, 86, 314), SIMD3<Float>(306, 110, 328)),
             (4, SIMD3<Float>(287, 111, 305), 5, SIMD3<Float>(282, 106, 300), SIMD3<Float>(292, 116, 310))
         ]
-        let originalGaussianCenter = SIMD3<Float>(292, 96, 302)
-        let expectedGaussianCenter = anchor + (originalGaussianCenter - anchor) * scale
-        let gaussian = try XCTUnwrap(scene.gaussians.first)
         let originalCamera = SIMD3<Float>(256.5, 112, 256.5)
         let dollyCamera = anchor + (originalCamera - anchor) * scale
 
-        XCTAssertEqual(gaussian.localCenterSigma.x, expectedGaussianCenter.x, accuracy: 0.0001)
-        XCTAssertEqual(gaussian.localCenterSigma.y, expectedGaussianCenter.y, accuracy: 0.0001)
-        XCTAssertEqual(gaussian.localCenterSigma.z, expectedGaussianCenter.z, accuracy: 0.0001)
-        XCTAssertEqual(gaussian.localCenterSigma.w, 4.8, accuracy: 0.0001)
-        XCTAssertEqual(gaussian.colorDensity.w, 0.34 / 1.5, accuracy: 0.0001)
         XCTAssertEqual(dollyCamera, SIMD3<Float>(240.75, 117, 233.75))
         XCTAssertEqual(Renderer.initialCameraPosition, dollyCamera)
+        let baselineDistance = simd_distance(originalCamera, anchor)
+        let newDistance = simd_distance(dollyCamera, anchor)
+        let voxelProjectionRatio = baselineDistance / newDistance
+        let heroProjectionRatio = (scale / newDistance) / (1 / baselineDistance)
+        XCTAssertEqual(voxelProjectionRatio, 2 / 3, accuracy: 0.0001)
+        XCTAssertEqual(heroProjectionRatio, 1, accuracy: 0.0001)
+        XCTAssertLessThanOrEqual(abs(heroProjectionRatio - 1), 0.1)
 
         for (kind, center, radius, minimum, maximum) in originalSDFs {
             let instance = try XCTUnwrap(scene.sdfInstances.first { $0.metadata.x == kind })
-            let expectedCenter = anchor + (center - anchor) * scale
-            XCTAssertEqual(instance.positionScale.x, expectedCenter.x, accuracy: 0.0001)
-            XCTAssertEqual(instance.positionScale.y, expectedCenter.y, accuracy: 0.0001)
-            XCTAssertEqual(instance.positionScale.z, expectedCenter.z, accuracy: 0.0001)
+            XCTAssertEqual(instance.positionScale.x, center.x, accuracy: 0.0001)
+            XCTAssertEqual(instance.positionScale.y, center.y, accuracy: 0.0001)
+            XCTAssertEqual(instance.positionScale.z, center.z, accuracy: 0.0001)
             XCTAssertEqual(instance.positionScale.w, radius * scale, accuracy: 0.0001)
             XCTAssertEqual(
                 SIMD3<Float>(instance.sweptBoundsMin.x, instance.sweptBoundsMin.y, instance.sweptBoundsMin.z),
-                anchor + (minimum - anchor) * scale
+                center + (minimum - center) * scale
             )
             XCTAssertEqual(
                 SIMD3<Float>(instance.sweptBoundsMax.x, instance.sweptBoundsMax.y, instance.sweptBoundsMax.z),
-                anchor + (maximum - anchor) * scale
+                center + (maximum - center) * scale
             )
+        }
+        for (index, gaussian) in scene.gaussians.enumerated() {
+            let angle = Float(index) * (.pi * 2 / 8)
+            let expectedCenter = SIMD3<Float>(
+                283 + cos(angle) * 9,
+                96 + Float(index % 2) * 4,
+                302 + sin(angle) * 7
+            )
+            XCTAssertEqual(gaussian.localCenterSigma.x, expectedCenter.x, accuracy: 0.0001)
+            XCTAssertEqual(gaussian.localCenterSigma.y, expectedCenter.y, accuracy: 0.0001)
+            XCTAssertEqual(gaussian.localCenterSigma.z, expectedCenter.z, accuracy: 0.0001)
+            XCTAssertEqual(gaussian.localCenterSigma.w, 4.8, accuracy: 0.0001)
+            XCTAssertEqual(gaussian.colorDensity.w, 0.34 / 1.5, accuracy: 0.0001)
         }
         for instance in scene.sdfInstances {
             XCTAssertGreaterThanOrEqual(instance.sweptBoundsMin.x, 0)
@@ -125,6 +140,55 @@ final class SceneDataTests: XCTestCase {
             XCTAssertLessThanOrEqual(gaussian.localCenterSigma.x + radius, 512)
             XCTAssertLessThanOrEqual(gaussian.localCenterSigma.y + radius, 512)
             XCTAssertLessThanOrEqual(gaussian.localCenterSigma.z + radius, 512)
+        }
+    }
+
+    func testHeroCreaturesContactProductionTerrainWithinOneVoxel() throws {
+        let scene = try SceneData.makeHero()
+        let creatures = scene.sdfInstances.filter { $0.metadata.x == 1 }
+        let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: """
+        kernel void probeHeroCreatureTerrain(
+            device const float2 *positions [[buffer(0)]],
+            device float *heights [[buffer(1)]],
+            uint index [[thread_position_in_grid]]) {
+            if (index >= 6u) return;
+            float2 position = positions[index] - float2(256.0f);
+            heights[index] = terrainHeight(position.x, position.y);
+        }
+        """)
+        let pipeline = try MetalProbeHarness.makePipeline(
+            name: "probeHeroCreatureTerrain",
+            library: library,
+            device: device
+        )
+        let positions = creatures.map { SIMD2<Float>($0.positionScale.x, $0.positionScale.z) }
+        let positionBuffer = try positions.withUnsafeBytes { bytes in
+            try XCTUnwrap(device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared))
+        }
+        let heightBuffer = try XCTUnwrap(device.makeBuffer(
+            length: MemoryLayout<Float>.stride * creatures.count,
+            options: .storageModeShared
+        ))
+        let commandBuffer = try XCTUnwrap(try XCTUnwrap(device.makeCommandQueue()).makeCommandBuffer())
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(positionBuffer, offset: 0, index: 0)
+        encoder.setBuffer(heightBuffer, offset: 0, index: 1)
+        encoder.dispatchThreads(
+            MTLSize(width: creatures.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
+
+        let heights = heightBuffer.contents().bindMemory(to: Float.self, capacity: creatures.count)
+        for (index, creature) in creatures.enumerated() {
+            let lowerExtent = creature.positionScale.y
+                - creature.parameters.x * 0.5
+                - creature.positionScale.w * 0.32
+            XCTAssertEqual(lowerExtent, heights[index], accuracy: 1, "creature \(index) terrain \(heights[index])")
         }
     }
 
