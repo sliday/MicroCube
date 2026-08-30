@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Metal
 import MetalKit
 
@@ -65,6 +66,12 @@ func postAccessibilityAnnouncement(_ announcement: String) {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let input = InputState()
     private let accessibilityDisplayOptionsProvider: () -> AccessibilityDisplayOptions
+    private let qaMode: QAMode?
+    private let startupError: String?
+    private let automationRequested: Bool
+    private let thermalStateBefore: String
+    private(set) var exitStatus: Int32 = 0
+    private var automationFinished = false
     private(set) var renderState = RenderState()
     private(set) var window: NSWindow?
     private(set) var metalView: MetalInputView?
@@ -88,9 +95,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     init(
         accessibilityDisplayOptionsProvider: @escaping () -> AccessibilityDisplayOptions = { .current },
-        accessibilityAnnouncementPoster: @escaping (String) -> Void = postAccessibilityAnnouncement
+        accessibilityAnnouncementPoster: @escaping (String) -> Void = postAccessibilityAnnouncement,
+        qaMode: QAMode? = nil,
+        startupError: String? = nil,
+        automationRequested: Bool = false
     ) {
         self.accessibilityDisplayOptionsProvider = accessibilityDisplayOptionsProvider
+        self.qaMode = qaMode
+        self.startupError = startupError
+        self.automationRequested = automationRequested || qaMode != nil || startupError != nil
+        thermalStateBefore = Self.thermalStateName(ProcessInfo.processInfo.thermalState)
         accessibilityAnnouncementHandler = { announcement in
             accessibilityAnnouncementPoster(announcement)
         }
@@ -98,17 +112,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     static func main() {
+        let arguments = Array(ProcessInfo.processInfo.arguments.dropFirst())
+        let requested = arguments.contains {
+            $0 == "--benchmark" || $0.hasPrefix("--qa-") || $0.hasPrefix("--benchmark-")
+        }
+        let mode: QAMode?
+        let startupError: String?
+        do {
+            mode = try QAMode.parseIfRequested(arguments)
+            startupError = nil
+        } catch {
+            mode = nil
+            startupError = error.localizedDescription
+        }
         let application = NSApplication.shared
-        let delegate = AppDelegate()
+        let delegate = AppDelegate(
+            qaMode: mode,
+            startupError: startupError,
+            automationRequested: requested
+        )
         application.setActivationPolicy(.regular)
         application.delegate = delegate
         application.run()
+        if delegate.automationRequested {
+            exit(delegate.exitStatus)
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMenu()
         configureWindow()
         NSApp.activate(ignoringOtherApps: true)
+        if let startupError {
+            setHUDText(startupError)
+            DispatchQueue.main.async { [weak self] in
+                self?.finishAutomation(status: 2)
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -161,7 +201,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func configureWindow() {
-        let contentRect = NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let contentSize = qaMode?.windowPoints ?? SIMD2<Int>(1280, 800)
+        let contentRect = NSRect(
+            x: 0,
+            y: 0,
+            width: contentSize.x,
+            height: contentSize.y
+        )
         let window = RendererShortcutWindow(
             contentRect: contentRect,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -184,6 +230,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let device = MTLCreateSystemDefaultDevice() else {
             installMetalUnavailableLabel(in: container)
             window.makeKeyAndOrderFront(nil)
+            if qaMode != nil {
+                finishQA(
+                    RendererQAResult(
+                        final: true,
+                        failure: "MicroCube Metal requires a Metal-capable Mac.",
+                        drawableCapture: nil,
+                        gpuMilliseconds: [],
+                        stepCounters: [:],
+                        budgetOverflows: 0,
+                        commandErrors: 1,
+                        droppedDrawables: 0,
+                        semaphoreTimeouts: 0
+                    )
+                )
+            }
             return
         }
 
@@ -203,10 +264,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "Click or press Return or Space to capture the mouse. Press Escape to release it. Use W, S, A, D, Q, and E to move."
         )
         metalView.onRenderAction = { [weak self] action in
-            self?.handleRenderAction(action) ?? false
+            guard self?.qaMode == nil else { return true }
+            return self?.handleRenderAction(action) ?? false
         }
-        window.onKeyDown = { [weak metalView] event in
-            metalView?.handleRendererShortcut(event) ?? false
+        window.onKeyDown = { [weak self, weak metalView] event in
+            guard self?.qaMode == nil else { return true }
+            return metalView?.handleRendererShortcut(event) ?? false
         }
         container.addSubview(metalView)
         self.metalView = metalView
@@ -224,24 +287,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.setCaptureLegend(captured: captured)
         }
 
-        guard let renderer = Renderer(
-            metalView: metalView,
-            input: input,
-            hudUpdate: { [weak self] text in
-                self?.setHUDText(text)
-            }
-        ) else {
-            setHUDText("Metal renderer initialization failed")
+        let renderer: Renderer
+        do {
+            renderer = try Renderer(
+                metalView: metalView,
+                input: input,
+                qaScene: qaMode?.scene,
+                hudUpdate: { [weak self] text in
+                    self?.setHUDText(text)
+                }
+            )
+        } catch {
+            setHUDText(error.localizedDescription)
             window.makeKeyAndOrderFront(nil)
+            if qaMode != nil {
+                finishQA(
+                    RendererQAResult(
+                        final: true,
+                        failure: error.localizedDescription,
+                        drawableCapture: nil,
+                        gpuMilliseconds: [],
+                        stepCounters: [:],
+                        budgetOverflows: 0,
+                        commandErrors: 1,
+                        droppedDrawables: 0,
+                        semaphoreTimeouts: 0
+                    )
+                )
+            }
             return
         }
 
         self.renderer = renderer
         metalView.delegate = renderer
+        if let qaMode {
+            renderState.features = qaMode.features
+            renderState.paused = true
+        }
         setRendererState()
 
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(metalView)
+        if let qaMode {
+            setHUDText(
+                "QA \(qaMode.scene.rawValue) · T \(qaMode.fixedTime) · \(qaMode.drawablePixels.x)×\(qaMode.drawablePixels.y) · \(qaMode.featureMask)"
+            )
+            renderer.configureQA(qaMode) { [weak self] result in
+                self?.handleQAResult(result)
+            }
+            container.layoutSubtreeIfNeeded()
+            DispatchQueue.main.async { [weak metalView] in
+                metalView?.draw()
+            }
+        }
     }
 
     private func installOverlay(in container: NSView) {
@@ -489,6 +587,169 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func toggleHUD(_ sender: Any?) {
         handleRenderAction(.toggleHUD)
+    }
+
+    private func handleQAResult(_ result: RendererQAResult) {
+        guard result.final else {
+            metalView?.draw()
+            return
+        }
+        finishQA(result)
+    }
+
+    private func finishQA(_ result: RendererQAResult) {
+        guard let qaMode else {
+            finishAutomation(status: 2)
+            return
+        }
+        var failure = result.failure
+        if failure == nil, let capturePath = qaMode.capturePath {
+            do {
+                switch qaMode.captureScope {
+                case .drawable:
+                    guard let capture = result.drawableCapture else {
+                        throw QAError.writeFailed(
+                            path: capturePath,
+                            diagnostic: "renderer did not return the completed drawable"
+                        )
+                    }
+                    try capture.writePNG(to: capturePath)
+                case .window:
+                    try writeWindowCapture(to: capturePath)
+                }
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+
+        let thermalStateAfter = Self.thermalStateName(ProcessInfo.processInfo.thermalState)
+        if failure == nil, let benchmark = qaMode.benchmark {
+            if result.gpuMilliseconds.count != benchmark.measuredFrames {
+                failure = "Benchmark recorded \(result.gpuMilliseconds.count) GPU samples; expected \(benchmark.measuredFrames)."
+            } else if result.gpuMilliseconds.contains(where: { !$0.isFinite || $0 <= 0 }) {
+                failure = "Benchmark GPU samples must be finite and positive."
+            } else if qaMode.featureMask != "all" || qaMode.renderScale != 1 || qaMode.view != .final {
+                failure = "Benchmark requires featureMask all, renderScale 1.0, and final view."
+            } else if thermalStateBefore != "nominal" || thermalStateAfter != "nominal" {
+                failure = "Benchmark requires nominal thermal state before and after the run."
+            }
+        }
+        if failure == nil, result.commandErrors > 0 {
+            failure = "Renderer reported \(result.commandErrors) command-buffer errors."
+        }
+        if failure == nil, result.droppedDrawables > 0 {
+            failure = "Renderer dropped \(result.droppedDrawables) drawables."
+        }
+        if failure == nil, result.semaphoreTimeouts > 0 {
+            failure = "Renderer reported \(result.semaphoreTimeouts) in-flight semaphore timeouts."
+        }
+
+        let benchmark = qaMode.benchmark
+        let report = QAFrameReport(
+            status: failure == nil ? "pass" : "fail",
+            failure: failure,
+            device: metalView?.device?.name ?? "No Metal device",
+            os: ProcessInfo.processInfo.operatingSystemVersionString,
+            scene: qaMode.scene.rawValue,
+            fixedTime: qaMode.fixedTime,
+            drawablePixels: [qaMode.drawablePixels.x, qaMode.drawablePixels.y],
+            renderScale: qaMode.renderScale,
+            windowCount: NSApplication.shared.windows.count,
+            productionKernels: [
+                "generateTerrain",
+                "reduceOccupancy",
+                "buildMixedOccupancy",
+                "reduceMixedOccupancy",
+                "clearVolumeLighting",
+                "injectVolumeLighting",
+                "raycastHybrid",
+            ],
+            featureMask: qaMode.featureMask,
+            passCount: 2,
+            stepCounters: result.stepCounters,
+            shadowSampleCounts: [
+                "surfaceSun": result.stepCounters["surfaceSunShadows"] ?? 0,
+                "surfaceLocal": result.stepCounters["surfaceLocalShadows"] ?? 0,
+                "volumeSun": result.stepCounters["volumeSunShadows"] ?? 0,
+                "volumeLocal": result.stepCounters["volumeLocalShadows"] ?? 0,
+            ],
+            budgetOverflows: result.budgetOverflows,
+            commandErrors: result.commandErrors,
+            droppedDrawables: result.droppedDrawables,
+            semaphoreTimeouts: result.semaphoreTimeouts,
+            capturePath: qaMode.capturePath,
+            fixedStep: qaMode.fixedStep,
+            warmupFrames: benchmark?.warmupFrames ?? 0,
+            measuredFrames: benchmark?.measuredFrames ?? 0,
+            gpuMilliseconds: result.gpuMilliseconds,
+            thermalStateBefore: benchmark == nil ? nil : thermalStateBefore,
+            thermalStateAfter: benchmark == nil ? nil : thermalStateAfter
+        )
+        if let reportPath = qaMode.reportPath {
+            do {
+                try report.write(to: reportPath)
+            } catch {
+                failure = error.localizedDescription
+                FileHandle.standardError.write(Data("\(failure!)\n".utf8))
+            }
+        }
+        finishAutomation(status: failure == nil ? 0 : 1)
+    }
+
+    private func writeWindowCapture(to path: String) throws {
+        guard let contentView = window?.contentView else {
+            throw QAError.writeFailed(path: path, diagnostic: "the existing window has no content view")
+        }
+        contentView.layoutSubtreeIfNeeded()
+        window?.displayIfNeeded()
+        guard let bitmap = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds) else {
+            throw QAError.writeFailed(path: path, diagnostic: "AppKit could not allocate a window bitmap")
+        }
+        contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else {
+            throw QAError.writeFailed(path: path, diagnostic: "AppKit PNG encoding failed")
+        }
+        let url = URL(fileURLWithPath: path)
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw QAError.writeFailed(path: path, diagnostic: error.localizedDescription)
+        }
+    }
+
+    private func finishAutomation(status: Int32) {
+        guard automationRequested, !automationFinished else { return }
+        automationFinished = true
+        exitStatus = status
+        let application = NSApplication.shared
+        application.stop(nil)
+        if let wakeEvent = NSEvent.otherEvent(
+            with: .applicationDefined,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0,
+            context: nil,
+            subtype: 0,
+            data1: 0,
+            data2: 0
+        ) {
+            application.postEvent(wakeEvent, atStart: false)
+        }
+    }
+
+    private static func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
     }
 
     deinit {

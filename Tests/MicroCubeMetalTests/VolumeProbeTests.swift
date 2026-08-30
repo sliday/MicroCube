@@ -3,6 +3,54 @@ import XCTest
 @testable import MicroCubeMetal
 
 final class VolumeProbeTests: XCTestCase {
+    func testVolumeAndMotionEnvelopesUseRequiredMetricKeysFromGPUResults() throws {
+        let math = try runMathProbe()
+        let clear = try runVolumeLighting(blocked: false)
+        let blocked = try runVolumeLighting(blocked: true)
+        let first = try runMotionProbe(time: 0)
+        let repeated = try runMotionProbe(time: 0)
+        let later = try runMotionProbe(time: 1)
+        let expectedHomogeneous = exp(-2.0)
+        let expectedGaussian = 1.253313
+        let sunRatio = Double(blocked.x / clear.x)
+        let localRatio = Double(blocked.w / clear.w)
+        let volumeMetrics = VolumeProbeMetrics(
+            maxHomogeneousRelativeError: abs(Double(math[0]) - expectedHomogeneous) / expectedHomogeneous,
+            maxGaussianRelativeError: abs(Double(math[1]) - expectedGaussian) / expectedGaussian,
+            maxSurfaceTransmittanceRelativeError: abs(Double(math[2]) - exp(-expectedGaussian)) / exp(-expectedGaussian),
+            sunShadowRadianceRatio: sunRatio,
+            localShadowRadianceRatio: localRatio,
+            smokeSunReceiverRatio: sunRatio,
+            smokeLocalReceiverRatio: localRatio,
+            nonFiniteCount: Int(math[3])
+        )
+        let motionMetrics = MotionProbeMetrics(
+            creatureCount: 6,
+            lightCount: 6,
+            repeatMismatchCount: first == repeated ? 0 : 1,
+            poseDeltaAtOneSecond: zip(first[0..<4], later[0..<4]).map { abs($0 - $1) }.reduce(0, +),
+            lightDeltaAtOneSecond: zip(first[4..<8], later[4..<8]).map { abs($0 - $1) }.reduce(0, +)
+        )
+        let volumeData = try ProbeEnvelope.evaluated(
+            probe: "volume", device: "test-device", metrics: volumeMetrics
+        ).encodedJSON()
+        let motionData = try ProbeEnvelope.evaluated(
+            probe: "motion", device: "test-device", metrics: motionMetrics
+        ).encodedJSON()
+        let volumeObject = try XCTUnwrap(JSONSerialization.jsonObject(with: volumeData) as? [String: Any])
+        let encodedMetrics = try XCTUnwrap(volumeObject["metrics"] as? [String: Any])
+
+        XCTAssertEqual(
+            Set(encodedMetrics.keys),
+            ["maxHomogeneousRelativeError", "maxGaussianRelativeError",
+             "maxSurfaceTransmittanceRelativeError", "sunShadowRadianceRatio",
+             "localShadowRadianceRatio", "smokeSunReceiverRatio", "smokeLocalReceiverRatio",
+             "nonFiniteCount"]
+        )
+        XCTAssertLessThan(try ProbeEnvelope<VolumeProbeMetrics>.decodeValidated(volumeData).metrics.sunShadowRadianceRatio, 0.35)
+        XCTAssertEqual(try ProbeEnvelope<MotionProbeMetrics>.decodeValidated(motionData).metrics.repeatMismatchCount, 0)
+    }
+
     func testGaussianOpticalDepthMatchesAnalyticReference() throws {
         let values = try runMathProbe()
 

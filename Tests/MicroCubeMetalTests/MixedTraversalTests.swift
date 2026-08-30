@@ -3,6 +3,40 @@ import XCTest
 @testable import MicroCubeMetal
 
 final class MixedTraversalTests: XCTestCase {
+    func testMixedProbeEnvelopeUsesRequiredMetricKeysFromGPUResult() throws {
+        let report = try runMixedProbe()
+        let mixed = TraversalStepMetrics(
+            voxelSteps: report.voxelSteps,
+            sdfSteps: report.sdfSamples,
+            gaussianSamples: report.gaussianSamples
+        )
+        let metrics = MixedProbeMetrics(
+            mixedLeafVoxel: report.mixedLeafVoxel == 1,
+            mixedLeafSDFRefs: report.mixedLeafSDFRefs,
+            wrongNearestHits: report.hit == 1 && report.stableID == 3 ? 0 : 1,
+            maxHitDistanceError: Double(abs(report.hitDistance - 8.5)),
+            voxelOnly: TraversalStepMetrics(voxelSteps: report.voxelSteps, sdfSteps: 0, gaussianSamples: 0),
+            sdfOnly: TraversalStepMetrics(voxelSteps: 0, sdfSteps: report.sdfSamples, gaussianSamples: 0),
+            gaussianOnly: TraversalStepMetrics(voxelSteps: 0, sdfSteps: 0, gaussianSamples: report.gaussianSamples),
+            mixed: mixed,
+            empty: TraversalStepMetrics(voxelSteps: 0, sdfSteps: 0, gaussianSamples: 0)
+        )
+        let data = try ProbeEnvelope.evaluated(probe: "mixed", device: "test-device", metrics: metrics).encodedJSON()
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let encodedMetrics = try XCTUnwrap(object["metrics"] as? [String: Any])
+
+        XCTAssertEqual(object["status"] as? String, "pass")
+        XCTAssertEqual(
+            Set(encodedMetrics.keys),
+            ["mixedLeafVoxel", "mixedLeafSDFRefs", "wrongNearestHits", "maxHitDistanceError",
+             "voxelOnly", "sdfOnly", "gaussianOnly", "mixed", "empty"]
+        )
+        XCTAssertEqual(
+            try ProbeEnvelope<MixedProbeMetrics>.decodeValidated(data).metrics.mixed,
+            mixed
+        )
+    }
+
     func testMixedLeafChoosesNearestOfVoxelAndTwoSDFs() throws {
         let report = try runMixedProbe()
 

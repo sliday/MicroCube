@@ -26,8 +26,10 @@ final class TerrainDetailTests: XCTestCase {
         let commandBuffer = try XCTUnwrap(commandQueue.makeCommandBuffer())
 
         let terrainEncoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        var fixtureSelector: UInt32 = 0
         terrainEncoder.setComputePipelineState(terrainPipeline)
         terrainEncoder.setTexture(volume, index: 0)
+        terrainEncoder.setBytes(&fixtureSelector, length: MemoryLayout<UInt32>.stride, index: 0)
         terrainEncoder.dispatchThreads(
             MTLSize(width: 512, height: 512, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)

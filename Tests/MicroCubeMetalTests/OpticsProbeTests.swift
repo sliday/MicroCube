@@ -4,6 +4,26 @@ import XCTest
 @testable import MicroCubeMetal
 
 final class OpticsProbeTests: XCTestCase {
+    func testOpticsProbeEnvelopeUsesRequiredMetricKeysFromGPUResult() throws {
+        let report = try runOpticsProbe()
+        let metrics = OpticsProbeMetrics(
+            maxReflectionDirectionError: Double(report.maxReflectionDirectionError),
+            maxRefractionDirectionError: Double(report.maxRefractionDirectionError),
+            tirFailureCount: report.tirFailureCount,
+            recursiveSecondaryRayCount: report.recursiveSecondaryRayCount
+        )
+        let data = try ProbeEnvelope.evaluated(probe: "optics", device: "test-device", metrics: metrics).encodedJSON()
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let encodedMetrics = try XCTUnwrap(object["metrics"] as? [String: Any])
+
+        XCTAssertEqual(
+            Set(encodedMetrics.keys),
+            ["maxReflectionDirectionError", "maxRefractionDirectionError", "tirFailureCount",
+             "recursiveSecondaryRayCount"]
+        )
+        XCTAssertEqual(try ProbeEnvelope<OpticsProbeMetrics>.decodeValidated(data).metrics, metrics)
+    }
+
     func testOpticalDirectionsMatchAnalyticReferences() throws {
         let report = try runOpticsProbe()
         XCTAssertLessThanOrEqual(report.maxReflectionDirectionError, 0.0001)

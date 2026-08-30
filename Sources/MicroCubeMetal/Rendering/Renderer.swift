@@ -8,6 +8,29 @@ enum SceneGPUResourceError: Error {
     case allocation(String)
 }
 
+enum RendererError: Error, LocalizedError {
+    case allocation(String)
+    case resource(String, String)
+    case kernel(String)
+    case pipeline(String, String)
+    case compiler(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .allocation(let name):
+            "Metal allocation failed for \(name)."
+        case .resource(let name, let diagnostic):
+            "Metal resource \(name) failed: \(diagnostic)"
+        case .kernel(let name):
+            "Metal kernel '\(name)' is missing from the runtime library."
+        case .pipeline(let name, let diagnostic):
+            "Metal pipeline '\(name)' failed: \(diagnostic)"
+        case .compiler(let diagnostic):
+            "Metal shader compilation failed: \(diagnostic)"
+        }
+    }
+}
+
 struct SceneGPUResources {
     let scene: SceneData
     let mixedOccupancy: MTLTexture
@@ -77,7 +100,29 @@ struct SceneGPUResources {
     }
 }
 
+struct RendererQAResult {
+    let final: Bool
+    let failure: String?
+    let drawableCapture: QADrawableCapture?
+    let gpuMilliseconds: [Double]
+    let stepCounters: [String: Int]
+    let budgetOverflows: Int
+    let commandErrors: Int
+    let droppedDrawables: Int
+    let semaphoreTimeouts: Int
+}
+
 final class Renderer: NSObject, MTKViewDelegate {
+    private struct QAExecution {
+        let plan: QARenderPlan
+        let completion: (RendererQAResult) -> Void
+        var submittedFrames = 0
+        var gpuMilliseconds: [Double] = []
+        var commandErrors = 0
+        var droppedDrawables = 0
+        var semaphoreTimeouts = 0
+    }
+
     private enum KeyCode {
         static let a: UInt16 = 0
         static let s: UInt16 = 1
@@ -85,11 +130,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         static let q: UInt16 = 12
         static let w: UInt16 = 13
         static let e: UInt16 = 14
-    }
-
-    private enum RendererError: Error {
-        case missingShaderSource
-        case missingFunction(String)
     }
 
     private static let worldSize = 512
@@ -130,13 +170,31 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastHUDTime = 0.0
     private var smoothedFPS = 0.0
     private var smoothedGPUTimeMS = 0.0
+    private var qaExecution: QAExecution?
 
-    init?(metalView: MTKView, input: InputState, hudUpdate: @escaping (String) -> Void) {
-        guard let device = metalView.device ?? MTLCreateSystemDefaultDevice(),
-              let commandQueue = device.makeCommandQueue(),
-              MemoryLayout<FrameUniforms>.stride == 112,
-              MemoryLayout<FrameCounters>.stride == 48 else {
-            return nil
+    init(
+        metalView: MTKView,
+        input: InputState,
+        qaScene: QAMode.Scene? = nil,
+        hudUpdate: @escaping (String) -> Void
+    ) throws {
+        guard let device = metalView.device ?? MTLCreateSystemDefaultDevice() else {
+            throw RendererError.resource("Metal device", "No compatible Metal device is available.")
+        }
+        guard let commandQueue = device.makeCommandQueue() else {
+            throw RendererError.allocation("command queue")
+        }
+        guard MemoryLayout<FrameUniforms>.stride == 112 else {
+            throw RendererError.resource(
+                "FrameUniforms ABI",
+                "expected stride 112, found \(MemoryLayout<FrameUniforms>.stride)"
+            )
+        }
+        guard MemoryLayout<FrameCounters>.stride == 48 else {
+            throw RendererError.resource(
+                "FrameCounters ABI",
+                "expected stride 48, found \(MemoryLayout<FrameCounters>.stride)"
+            )
         }
 
         let library: MTLLibrary
@@ -147,18 +205,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         let volumeClearPipeline: MTLComputePipelineState
         let volumeLightingPipeline: MTLComputePipelineState
         let raycastPipeline: MTLComputePipelineState
-        do {
-            library = try Renderer.makeLibrary(device: device)
-            terrainPipeline = try Renderer.makePipeline(name: "generateTerrain", library: library, device: device)
-            reductionPipeline = try Renderer.makePipeline(name: "reduceOccupancy", library: library, device: device)
-            mixedBuildPipeline = try Renderer.makePipeline(name: "buildMixedOccupancy", library: library, device: device)
-            mixedReductionPipeline = try Renderer.makePipeline(name: "reduceMixedOccupancy", library: library, device: device)
-            volumeClearPipeline = try Renderer.makePipeline(name: "clearVolumeLighting", library: library, device: device)
-            volumeLightingPipeline = try Renderer.makePipeline(name: "injectVolumeLighting", library: library, device: device)
-            raycastPipeline = try Renderer.makePipeline(name: "raycastHybrid", library: library, device: device)
-        } catch {
-            return nil
-        }
+        library = try Renderer.makeLibrary(device: device)
+        terrainPipeline = try Renderer.makePipeline(name: "generateTerrain", library: library, device: device)
+        reductionPipeline = try Renderer.makePipeline(name: "reduceOccupancy", library: library, device: device)
+        mixedBuildPipeline = try Renderer.makePipeline(name: "buildMixedOccupancy", library: library, device: device)
+        mixedReductionPipeline = try Renderer.makePipeline(name: "reduceMixedOccupancy", library: library, device: device)
+        volumeClearPipeline = try Renderer.makePipeline(name: "clearVolumeLighting", library: library, device: device)
+        volumeLightingPipeline = try Renderer.makePipeline(name: "injectVolumeLighting", library: library, device: device)
+        raycastPipeline = try Renderer.makePipeline(name: "raycastHybrid", library: library, device: device)
 
         let volumeDescriptor = MTLTextureDescriptor()
         volumeDescriptor.textureType = .type3D
@@ -170,19 +224,22 @@ final class Renderer: NSObject, MTKViewDelegate {
         volumeDescriptor.storageMode = .private
         volumeDescriptor.usage = [.shaderRead, .shaderWrite]
         guard let volumeTexture = device.makeTexture(descriptor: volumeDescriptor) else {
-            return nil
+            throw RendererError.allocation("512-cubed occupancy texture")
         }
         let sceneResources: SceneGPUResources
         do {
-            sceneResources = try SceneGPUResources(device: device, scene: SceneData.makeHero())
+            let scene = try qaScene.map(Self.makeScene(for:)) ?? SceneData.makeHero()
+            sceneResources = try SceneGPUResources(device: device, scene: scene)
+        } catch SceneGPUResourceError.allocation(let name) {
+            throw RendererError.allocation(name)
         } catch {
-            return nil
+            throw RendererError.resource("scene", error.localizedDescription)
         }
         let counterBuffers = (0..<3).compactMap { _ in
             device.makeBuffer(length: MemoryLayout<FrameCounters>.stride, options: .storageModeShared)
         }
         guard counterBuffers.count == 3 else {
-            return nil
+            throw RendererError.allocation("frame counter buffers")
         }
 
         self.input = input
@@ -210,8 +267,50 @@ final class Renderer: NSObject, MTKViewDelegate {
         metalView.isPaused = false
         metalView.presentsWithTransaction = false
 
-        guard initializeWorld() else {
-            return nil
+        try initializeWorld(terrainFixture: Self.terrainFixture(for: qaScene))
+    }
+
+    static func makeScene(for qaScene: QAMode.Scene) throws -> SceneData {
+        let hero = try SceneData.makeHero()
+        switch qaScene {
+        case .hero, .mixedFixture:
+            return hero
+        case .shadowFixture:
+            return try SceneData.build(
+                sdfInstances: [],
+                gaussians: [],
+                lights: hero.lights,
+                materials: hero.materials
+            )
+        case .opticsFixture:
+            return try SceneData.build(
+                sdfInstances: hero.sdfInstances.filter { $0.metadata.x == 4 },
+                gaussians: [],
+                lights: hero.lights,
+                materials: hero.materials
+            )
+        case .fogClear, .fogBlocked, .gaussianFixture:
+            return try SceneData.build(
+                sdfInstances: [],
+                gaussians: hero.gaussians,
+                lights: hero.lights,
+                materials: hero.materials
+            )
+        case .fractalFixture:
+            return try SceneData.build(
+                sdfInstances: hero.sdfInstances.filter { $0.metadata.x == 3 },
+                gaussians: [],
+                lights: hero.lights,
+                materials: hero.materials
+            )
+        }
+    }
+
+    private static func terrainFixture(for qaScene: QAMode.Scene?) -> UInt32 {
+        switch qaScene {
+        case .fogClear: 1
+        case .fogBlocked: 2
+        default: 0
         }
     }
 
@@ -230,51 +329,100 @@ final class Renderer: NSObject, MTKViewDelegate {
         stateLock.unlock()
     }
 
+    func configureQA(_ mode: QAMode, completion: @escaping (RendererQAResult) -> Void) {
+        stateLock.lock()
+        qaExecution = QAExecution(plan: QARenderPlan(mode: mode), completion: completion)
+        scaleController = RenderScaleController(scale: mode.renderScale, mode: .fixed)
+        sceneTime = mode.fixedTime
+        switch mode.camera {
+        case .reset:
+            cameraPosition = Renderer.initialCameraPosition
+            yaw = Renderer.initialYaw
+            pitch = Renderer.initialPitch
+        case .custom(let position, let customYaw, let customPitch):
+            cameraPosition = SIMD3(Float(position.x), Float(position.y), Float(position.z))
+            yaw = Float(customYaw)
+            pitch = Float(customPitch)
+        }
+        drawableSizeDirty = false
+        stateLock.unlock()
+
+        metalView?.autoResizeDrawable = false
+        metalView?.drawableSize = CGSize(width: mode.drawablePixels.x, height: mode.drawablePixels.y)
+        metalView?.enableSetNeedsDisplay = true
+        metalView?.isPaused = true
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         drawableSizeDirty = true
     }
 
     func draw(in view: MTKView) {
         let now = CACurrentMediaTime()
-        let deltaTime = min(0.05, max(0.0, now - lastFrameTime))
+        stateLock.lock()
+        let qaFrame = qaExecution.map { ($0.plan, $0.submittedFrames) }
+        stateLock.unlock()
+        let deltaTime = qaFrame == nil ? min(0.05, max(0.0, now - lastFrameTime)) : 0
         lastFrameTime = now
         let state = currentRenderState()
-        if !state.paused {
+        if let (plan, frame) = qaFrame {
+            sceneTime = plan.time(forFrame: frame)
+        } else if !state.paused {
             sceneTime += deltaTime
         }
-        updateCamera(deltaTime: Float(deltaTime))
-        updateFrameRate(deltaTime: deltaTime)
-        adjustRenderScaleIfNeeded()
-        updateDrawableSize(view)
+        if let (plan, _) = qaFrame {
+            updateQADrawableSize(view, plan: plan)
+        } else {
+            updateCamera(deltaTime: Float(deltaTime))
+            updateFrameRate(deltaTime: deltaTime)
+            adjustRenderScaleIfNeeded()
+            updateDrawableSize(view)
+        }
 
-        guard view.drawableSize.width >= 1.0,
-              view.drawableSize.height >= 1.0,
-              inFlightSemaphore.wait(timeout: .now() + 0.1) == .success else {
+        guard view.drawableSize.width >= 1.0, view.drawableSize.height >= 1.0 else {
+            failQA("The requested drawable size is empty.", droppedDrawable: true)
+            return
+        }
+        guard inFlightSemaphore.wait(timeout: .now() + 0.1) == .success else {
+            failQA("Timed out waiting for an in-flight Metal frame.", semaphoreTimeout: true)
             return
         }
 
-        guard let drawable = view.currentDrawable,
-              let commandBuffer = commandQueue.makeCommandBuffer() else {
+        guard let drawable = view.currentDrawable else {
             inFlightSemaphore.signal()
+            failQA("MTKView did not provide a drawable.", droppedDrawable: true)
+            return
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            inFlightSemaphore.signal()
+            failQA("Metal command buffer allocation failed.", commandError: true)
             return
         }
 
         let counterSlot = Int(frameIndex % 3)
         guard prepareCounterSlot(counterSlot) else {
             inFlightSemaphore.signal()
+            failQA("The selected frame-counter slot is still in flight.", commandError: true)
             return
         }
         let counterBuffer = counterBuffers[counterSlot]
-        let aggregatesCounters = state.counterAggregationEnabled
+        let aggregatesCounters = state.counterAggregationEnabled || qaFrame != nil
 
         let width = drawable.texture.width
         let height = drawable.texture.height
-        var uniforms = makeUniforms(width: width, height: height, time: sceneTime, state: state)
+        var uniforms = makeUniforms(
+            width: width,
+            height: height,
+            time: sceneTime,
+            state: state,
+            qaView: qaFrame?.0.mode.view
+        )
         var sceneUniforms = makeSceneUniforms()
 
         guard let volumeEncoder = commandBuffer.makeComputeCommandEncoder() else {
             releaseCounterSlot(counterSlot)
             inFlightSemaphore.signal()
+            failQA("Metal volume encoder allocation failed.", commandError: true)
             return
         }
         volumeEncoder.label = "Inject volume lighting"
@@ -304,6 +452,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             releaseCounterSlot(counterSlot)
             inFlightSemaphore.signal()
+            failQA("Metal ray encoder allocation failed.", commandError: true)
             return
         }
         encoder.label = "MicroCube raycast"
@@ -332,31 +481,217 @@ final class Renderer: NSObject, MTKViewDelegate {
         )
         encoder.endEncoding()
 
+        var captureBuffer: MTLBuffer?
+        var captureBytesPerRow = 0
+        if let (plan, frame) = qaFrame,
+           plan.isFinal(frame: frame),
+           plan.mode.captureScope == .drawable,
+           plan.mode.capturePath != nil {
+            captureBytesPerRow = (width * 4 + 255) & ~255
+            guard let buffer = commandQueue.device.makeBuffer(
+                length: captureBytesPerRow * height,
+                options: .storageModeShared
+            ), let blit = commandBuffer.makeBlitCommandEncoder() else {
+                releaseCounterSlot(counterSlot)
+                inFlightSemaphore.signal()
+                failQA("Drawable capture allocation failed.", commandError: true)
+                return
+            }
+            blit.label = "Copy completed QA drawable"
+            blit.copy(
+                from: drawable.texture,
+                sourceSlice: 0,
+                sourceLevel: 0,
+                sourceOrigin: .init(x: 0, y: 0, z: 0),
+                sourceSize: .init(width: width, height: height, depth: 1),
+                to: buffer,
+                destinationOffset: 0,
+                destinationBytesPerRow: captureBytesPerRow,
+                destinationBytesPerImage: captureBytesPerRow * height
+            )
+            blit.endEncoding()
+            captureBuffer = buffer
+        }
+
         commandBuffer.label = "MicroCube frame \(frameIndex)"
         commandBuffer.present(drawable)
         let semaphore = inFlightSemaphore
         commandBuffer.addCompletedHandler { [weak self] completedBuffer in
-            if completedBuffer.gpuEndTime > completedBuffer.gpuStartTime {
-                self?.recordGPUTime((completedBuffer.gpuEndTime - completedBuffer.gpuStartTime) * 1_000.0)
+            let gpuMilliseconds = completedBuffer.gpuEndTime > completedBuffer.gpuStartTime
+                ? (completedBuffer.gpuEndTime - completedBuffer.gpuStartTime) * 1_000.0
+                : 0
+            if gpuMilliseconds > 0 {
+                self?.recordGPUTime(gpuMilliseconds)
             }
             self?.completeCounterSlot(counterSlot, aggregationEnabled: aggregatesCounters)
+            if let (plan, frame) = qaFrame {
+                let capture = captureBuffer.map {
+                    QADrawableCapture(
+                        width: width,
+                        height: height,
+                        bytesPerRow: captureBytesPerRow,
+                        bgra8: Data(bytes: $0.contents(), count: captureBytesPerRow * height)
+                    )
+                }
+                self?.completeQAFrame(
+                    plan: plan,
+                    frame: frame,
+                    commandBuffer: completedBuffer,
+                    gpuMilliseconds: gpuMilliseconds,
+                    drawableCapture: capture
+                )
+            }
             semaphore.signal()
         }
         commandBuffer.commit()
 
+        if qaFrame != nil {
+            stateLock.lock()
+            qaExecution?.submittedFrames += 1
+            stateLock.unlock()
+        }
         frameIndex &+= 1
-        updateHUDIfNeeded(now: now, width: width, height: height, state: state)
+        if qaFrame == nil {
+            updateHUDIfNeeded(now: now, width: width, height: height, state: state)
+        }
+    }
+
+    private func updateQADrawableSize(_ view: MTKView, plan: QARenderPlan) {
+        let size = CGSize(width: plan.drawablePixels.x, height: plan.drawablePixels.y)
+        if view.drawableSize != size {
+            view.drawableSize = size
+        }
+    }
+
+    private func failQA(
+        _ failure: String,
+        commandError: Bool = false,
+        droppedDrawable: Bool = false,
+        semaphoreTimeout: Bool = false
+    ) {
+        stateLock.lock()
+        guard var execution = qaExecution else {
+            stateLock.unlock()
+            return
+        }
+        if commandError { execution.commandErrors += 1 }
+        if droppedDrawable { execution.droppedDrawables += 1 }
+        if semaphoreTimeout { execution.semaphoreTimeouts += 1 }
+        qaExecution = nil
+        let counters = latestCounters
+        stateLock.unlock()
+
+        let completion = execution.completion
+        let result = RendererQAResult(
+            final: true,
+            failure: failure,
+            drawableCapture: nil,
+            gpuMilliseconds: execution.gpuMilliseconds,
+            stepCounters: counterDictionary(counters),
+            budgetOverflows: Int(counters?.budgetOverflows ?? 0),
+            commandErrors: execution.commandErrors,
+            droppedDrawables: execution.droppedDrawables,
+            semaphoreTimeouts: execution.semaphoreTimeouts
+        )
+        DispatchQueue.main.async {
+            completion(result)
+        }
+    }
+
+    private func completeQAFrame(
+        plan: QARenderPlan,
+        frame: Int,
+        commandBuffer: MTLCommandBuffer,
+        gpuMilliseconds: Double,
+        drawableCapture: QADrawableCapture?
+    ) {
+        stateLock.lock()
+        guard var execution = qaExecution else {
+            stateLock.unlock()
+            return
+        }
+        var failure: String?
+        if commandBuffer.status != .completed {
+            execution.commandErrors += 1
+            failure = commandBuffer.error?.localizedDescription
+                ?? "Metal command buffer ended with status \(commandBuffer.status.rawValue)."
+        } else if plan.measuresGPU(frame: frame) {
+            if gpuMilliseconds.isFinite, gpuMilliseconds > 0 {
+                execution.gpuMilliseconds.append(gpuMilliseconds)
+            } else {
+                execution.commandErrors += 1
+                failure = "Metal did not provide a finite positive GPU duration."
+            }
+        }
+        let final = failure != nil || plan.isFinal(frame: frame)
+        let counters = latestCounters
+        if final {
+            qaExecution = nil
+        } else {
+            qaExecution = execution
+        }
+        stateLock.unlock()
+
+        let result = RendererQAResult(
+            final: final,
+            failure: failure,
+            drawableCapture: drawableCapture,
+            gpuMilliseconds: execution.gpuMilliseconds,
+            stepCounters: counterDictionary(counters),
+            budgetOverflows: Int(counters?.budgetOverflows ?? 0),
+            commandErrors: execution.commandErrors,
+            droppedDrawables: execution.droppedDrawables,
+            semaphoreTimeouts: execution.semaphoreTimeouts
+        )
+        let completion = execution.completion
+        DispatchQueue.main.async {
+            completion(result)
+        }
+    }
+
+    private func counterDictionary(_ counters: FrameCounters?) -> [String: Int] {
+        guard let counters else {
+            return [
+                "macroSkips": 0,
+                "macroDescents": 0,
+                "voxelSteps": 0,
+                "sdfSteps": 0,
+                "gaussianSamples": 0,
+                "secondarySceneRays": 0,
+            ]
+        }
+        return [
+            "macroSkips": Int(counters.macroSkips),
+            "macroDescents": Int(counters.macroDescents),
+            "voxelSteps": Int(counters.voxelSteps),
+            "sdfSteps": Int(counters.sdfSamples),
+            "gaussianSamples": Int(counters.gaussianSamples),
+            "secondarySceneRays": Int(counters.secondaryRays),
+            "surfaceSunShadows": Int(counters.surfaceSunShadows),
+            "surfaceLocalShadows": Int(counters.surfaceLocalShadows),
+            "volumeSunShadows": Int(counters.volumeSunShadows),
+            "volumeLocalShadows": Int(counters.volumeLocalShadows),
+        ]
     }
 
     private static func makeLibrary(device: MTLDevice) throws -> MTLLibrary {
-        let source = try ShaderSourceLoader.load()
+        let source: String
+        do {
+            source = try ShaderSourceLoader.load()
+        } catch {
+            throw RendererError.resource("shader source", error.localizedDescription)
+        }
         let options = MTLCompileOptions()
         if #available(macOS 15.0, *) {
             options.mathMode = .fast
         } else {
             options.fastMathEnabled = true
         }
-        return try device.makeLibrary(source: source, options: options)
+        do {
+            return try device.makeLibrary(source: source, options: options)
+        } catch {
+            throw RendererError.compiler(error.localizedDescription)
+        }
     }
 
     private static func makePipeline(
@@ -365,13 +700,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         device: MTLDevice
     ) throws -> MTLComputePipelineState {
         guard let function = library.makeFunction(name: name) else {
-            throw RendererError.missingFunction(name)
+            throw RendererError.kernel(name)
         }
         let descriptor = MTLComputePipelineDescriptor()
         descriptor.label = name
         descriptor.computeFunction = function
         descriptor.threadGroupSizeIsMultipleOfThreadExecutionWidth = true
-        return try device.makeComputePipelineState(descriptor: descriptor, options: [], reflection: nil)
+        do {
+            return try device.makeComputePipelineState(descriptor: descriptor, options: [], reflection: nil)
+        } catch {
+            throw RendererError.pipeline(name, error.localizedDescription)
+        }
     }
 
     private static func make2DThreadgroupSize(for pipeline: MTLComputePipelineState) -> MTLSize {
@@ -387,15 +726,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         return MTLSize(width: width, height: height, depth: depth)
     }
 
-    private func initializeWorld() -> Bool {
+    private func initializeWorld(terrainFixture: UInt32) throws {
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let terrainEncoder = commandBuffer.makeComputeCommandEncoder() else {
-            return false
+            throw RendererError.allocation("world construction command encoder")
         }
 
         terrainEncoder.label = "Generate terrain"
         terrainEncoder.setComputePipelineState(terrainPipeline)
         terrainEncoder.setTexture(volumeTexture, index: 0)
+        var terrainFixture = terrainFixture
+        terrainEncoder.setBytes(&terrainFixture, length: MemoryLayout<UInt32>.stride, index: 0)
         terrainEncoder.dispatchThreads(
             MTLSize(width: Renderer.worldSize, height: Renderer.worldSize, depth: 1),
             threadsPerThreadgroup: Renderer.make2DThreadgroupSize(for: terrainPipeline)
@@ -414,7 +755,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 levels: destinationLevel..<(destinationLevel + 1),
                 slices: 0..<1
             ), let encoder = commandBuffer.makeComputeCommandEncoder() else {
-                return false
+                throw RendererError.allocation("occupancy mip encoder \(destinationLevel)")
             }
 
             encoder.label = "Reduce occupancy mip \(destinationLevel)"
@@ -429,7 +770,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         guard let mixedEncoder = commandBuffer.makeComputeCommandEncoder() else {
-            return false
+            throw RendererError.allocation("mixed occupancy encoder")
         }
         mixedEncoder.label = "Build mixed occupancy"
         mixedEncoder.setComputePipelineState(mixedBuildPipeline)
@@ -456,7 +797,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 levels: destinationLevel..<(destinationLevel + 1),
                 slices: 0..<1
             ), let encoder = commandBuffer.makeComputeCommandEncoder() else {
-                return false
+                throw RendererError.allocation("mixed occupancy mip encoder \(destinationLevel)")
             }
 
             encoder.label = "Reduce mixed occupancy mip \(destinationLevel)"
@@ -471,7 +812,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         guard let volumeClearEncoder = commandBuffer.makeComputeCommandEncoder() else {
-            return false
+            throw RendererError.allocation("volume clear encoder")
         }
         volumeClearEncoder.label = "Clear volume lighting"
         volumeClearEncoder.setComputePipelineState(volumeClearPipeline)
@@ -485,7 +826,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         commandBuffer.label = "Build MicroCube world"
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        return commandBuffer.status == .completed
+        guard commandBuffer.status == .completed else {
+            throw RendererError.resource(
+                "world construction command buffer",
+                commandBuffer.error?.localizedDescription ?? "status \(commandBuffer.status.rawValue)"
+            )
+        }
     }
 
     func currentRenderState() -> RenderState {
@@ -568,7 +914,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         width: Int,
         height: Int,
         time: CFTimeInterval,
-        state: RenderState
+        state: RenderState,
+        qaView: QAMode.View? = nil
     ) -> FrameUniforms {
         let cosPitch = cos(pitch)
         let sinPitch = sin(pitch)
@@ -581,8 +928,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         let aspect = Float(width) / Float(max(1, height))
         let halfFOV = tan(Float(70.0 * .pi / 360.0))
 
-        var options = state.features.rawValue | (state.evidenceView.rawValue << 8) | (1 << 31)
-        if state.counterAggregationEnabled {
+        let evidenceView = qaView?.shaderValue ?? state.evidenceView.rawValue
+        var options = state.features.rawValue | (evidenceView << 8) | (1 << 31)
+        if state.counterAggregationEnabled || qaView != nil {
             options |= 1 << 16
         }
         return FrameUniforms(

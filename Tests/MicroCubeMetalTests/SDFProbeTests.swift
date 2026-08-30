@@ -4,6 +4,32 @@ import XCTest
 @testable import MicroCubeMetal
 
 final class SDFProbeTests: XCTestCase {
+    func testSDFProbeEnvelopeUsesRequiredMetricKeysFromGPUResult() throws {
+        let values = try runProbe()
+        let normal = SIMD3<Float>(values[3], values[4], values[5])
+        let metrics = SDFProbeMetrics(
+            maxDistanceError: Double(max(abs(values[0] - 1), abs(values[1] - 0.5), abs(values[2] - 0.14375))),
+            maxNormalAngleDegrees: Double(acos(min(1, max(-1, normal.x))) * 180 / .pi),
+            maxNormalLengthError: Double(abs(simd_length(normal) - 1)),
+            nonFiniteCount: Int(values[8]),
+            negativeExteriorStepCount: Int(values[7]),
+            fractalCoverage: 0
+        )
+        let data = try ProbeEnvelope.evaluated(probe: "sdf", device: "test-device", metrics: metrics).encodedJSON()
+        let decoded = try ProbeEnvelope<SDFProbeMetrics>.decodeValidated(data)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let encodedMetrics = try XCTUnwrap(object["metrics"] as? [String: Any])
+
+        XCTAssertEqual(object["status"] as? String, "pass")
+        XCTAssertEqual(
+            Set(encodedMetrics.keys),
+            ["maxDistanceError", "maxNormalAngleDegrees", "maxNormalLengthError", "nonFiniteCount",
+             "negativeExteriorStepCount", "fractalCoverage"]
+        )
+        XCTAssertLessThanOrEqual(decoded.metrics.maxDistanceError, 0.0001)
+        XCTAssertEqual(decoded.metrics.nonFiniteCount, 0)
+    }
+
     func testAnalyticDistancesAndNormalsMatchIndependentReferences() throws {
         let values = try runProbe()
 

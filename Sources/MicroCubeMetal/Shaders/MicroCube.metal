@@ -97,8 +97,20 @@ inline float islandDensity(float wx, float y, float wz) {
 }
 
 kernel void generateTerrain(texture3d<uint, access::write> volume [[texture(0)]],
+                            constant uint &qaTerrainFixture [[buffer(0)]],
                             uint2 gid [[thread_position_in_grid]]) {
     if (any(gid >= uint2(kWorldSize))) {
+        return;
+    }
+
+    if (qaTerrainFixture != 0u) {
+        for (uint y = 0u; y < kWorldSize; ++y) {
+            bool blocker = qaTerrainFixture == 2u
+                && gid.x >= 248u && gid.x < 352u
+                && y >= 136u && y < 140u
+                && gid.y >= 272u && gid.y < 352u;
+            volume.write(uint4(blocker ? 1u : 0u), uint3(gid.x, y, gid.y));
+        }
         return;
     }
 
@@ -385,6 +397,32 @@ inline void aggregateFrameCounters(thread const TraceCounts &counts,
     }
 }
 
+inline float3 qaPrimitiveIDColor(bool hasHit, uint primitiveKind, uint stableID) {
+    if (!hasHit) {
+        return float3(0.0f);
+    }
+    uint hash = stableID ^ ((primitiveKind + 1u) * 0x9e3779b9u);
+    hash ^= hash >> 16u;
+    hash *= 0x7feb352du;
+    hash ^= hash >> 15u;
+    return 0.2f + 0.8f * float3(
+        float(hash & 0xffu),
+        float((hash >> 8u) & 0xffu),
+        float((hash >> 16u) & 0xffu)
+    ) / 255.0f;
+}
+
+inline float3 qaNormalColor(bool hasHit, float3 normal) {
+    return hasHit ? normal * 0.5f + 0.5f : float3(0.0f);
+}
+
+inline float3 qaShadowMismatchColor(bool comparable, bool exactShadow, bool legacyShadow) {
+    if (!comparable || exactShadow == legacyShadow) {
+        return float3(0.0f);
+    }
+    return exactShadow ? float3(1.0f, 0.25f, 0.0f) : float3(1.0f, 0.0f, 1.0f);
+}
+
 kernel void raycastHybrid(
     texture3d<uint, access::read> volume [[texture(0)]],
     texture3d<uint, access::read> mixed [[texture(1)]],
@@ -419,6 +457,9 @@ kernel void raycastHybrid(
     uint secondaryRays = 0u;
     uint surfaceSunShadows = 0u;
     uint surfaceLocalShadows = 0u;
+    bool surfaceShadowComparable = false;
+    bool surfaceExactShadow = false;
+    bool surfaceLegacyShadow = false;
 
     float2 pixel = float2(pixelGID) + 0.5f;
     float horizontal = (2.0f * pixel.x / float(viewport.x) - 1.0f)
@@ -449,10 +490,20 @@ kernel void raycastHybrid(
             lighting *= voxelAO(volume, point, hit.normal);
         }
 
-        if (shadowsEnabled && !isGlass && diffuse > 0.0f) {
-            TraceHit shadowHit;
+        if ((shadowsEnabled || evidenceView == 7u) && !isGlass && diffuse > 0.0f) {
+            TraceHit exactShadowHit;
             surfaceSunShadows = 1u;
-            if (traceOcclusionExact(volume, point + hit.normal * 0.035f, sunDirection, 100.0f, shadowHit)) {
+            surfaceExactShadow = traceOcclusionExact(
+                volume, point + hit.normal * 0.035f, sunDirection, 100.0f, exactShadowHit
+            );
+            if (evidenceView == 7u) {
+                TraceHit legacyShadowHit;
+                surfaceShadowComparable = true;
+                surfaceLegacyShadow = traceVolume(
+                    volume, point + hit.normal * 0.035f, sunDirection, 100.0f, 1u, legacyShadowHit
+                );
+            }
+            if (shadowsEnabled && surfaceExactShadow) {
                 lighting *= 0.45f;
             }
         }
@@ -677,6 +728,16 @@ kernel void raycastHybrid(
         );
         float heat = saturate(log2(1.0f + totalWork) / 11.0f);
         color = float3(heat, heat * heat, (1.0f - heat) * 0.85f);
+    } else if (evidenceView == 5u) {
+        color = hasHit
+            ? qaPrimitiveIDColor(true, hit.primitiveKind, hit.stableID)
+            : qaPrimitiveIDColor(false, 0u, 0u);
+    } else if (evidenceView == 6u) {
+        color = hasHit ? qaNormalColor(true, hit.normal) : qaNormalColor(false, float3(0.0f));
+    } else if (evidenceView == 7u) {
+        color = qaShadowMismatchColor(
+            surfaceShadowComparable, surfaceExactShadow, surfaceLegacyShadow
+        );
     }
 
     if ((options & COUNTER_AGGREGATION) != 0u) {
