@@ -415,3 +415,102 @@ The single permitted fixed 1280 by 800 benchmark used time 1, final view, 20 war
 - Runtime: `status=pass`, nominal thermal state before and after, one window, two passes, zero command errors, zero dropped drawables, zero semaphore timeouts, and 8,809 budget overflows.
 
 BLOCKED: the production placement passes the visual, component, pixel-span, build, and regression gates, but its only allowed acceptance benchmark exceeds the p95 limit. Runtime budget overflows also increased from the round-2 architecture captures' 5,818 to 5,964 range to 8,799 to 8,817. The no-retry rule prevents a passing acceptance benchmark for this round.
+
+## Fix round 4 diagnosis before test edits
+
+I reread `SceneData.makeHero() throws -> SceneData` and the focused scene tests before changing the fixture. The source and tests agree with the round-3 composition, but both encode the performance-failing fractal depth:
+
+- The source scales base center `(270, 118, 340)` to final center `(261, 126, 359)`. The focused test expects that final center.
+- The source scales base bounds `(263, 106, 333)` through `(277, 130, 347)` to final bounds `(250.5, 108, 348.5)` through `(271.5, 144, 369.5)`. The focused test expects those bounds.
+- The source retains radius `10.5`, eight iterations, material index `2`, stable ID `1`, and the existing bounds shape. Those authored values already match the round-4 constraints and require no change.
+- The creature fixtures still specify all six accepted positions, and the camera fixture still specifies `(240.75, 117, 233.75)`. Round 4 does not require either fixture to change.
+
+The round-3 primitive-ID capture measured 7,365 total fractal pixels, a `124x118` full box, and a fixed screen centroid near `(362.90, 249.11)`. Total fractal coverage is `7,365 / (1,280 * 800) = 0.719238%`.
+
+For camera position `C = (240.75, 117, 233.75)` and current final center `F = (261, 126, 359)`, the current camera-to-fractal ray is `F - C = (20.25, 9, 125.25)`. Applying the independently chosen depth multiplier `m = 1.25` gives:
+
+- final center `C + m * (F - C) = (266.0625, 128.25, 390.3125)`;
+- final bounds `(255.5625, 110.25, 379.8125)` through `(276.5625, 146.25, 400.8125)` after translating the unchanged `21x36x21` bounds shape;
+- base center `(273.375, 119.5, 360.875)` and base bounds `(266.375, 107.5, 353.875)` through `(280.375, 131.5, 367.875)` before the existing 1.5x anchor transform.
+
+Camera-relative coordinates all multiply by `m`, so the projected center ratios `x/z` and `y/z` stay fixed. Projected area scales by `1 / m^2`: `7,365 / 1.25^2 = 4,713.6` expected pixels, or `0.460313%` of the drawable. The same calculation reduces the projected bounds envelope from 14,632 pixels to about 9,364 pixels, a 36% reduction in the screen-space region that can invoke bounded fractal work. The expected total remains above the 4,000-pixel gate, and every translated bound coordinate remains inside the 512-unit world.
+
+## Fix round 4 RED
+
+I changed the existing independently literal SDF fixture to the target final center and bounds, then ran:
+
+```sh
+./scripts/test.sh --filter 'SceneDataTests/testHeroPresentationScaleExpandsSDFsAndGaussiansWithinWorldBounds'
+```
+
+The focused test executed once and failed with five expected assertions. Production returned old center `(261, 126, 359)` instead of `(266.0625, 128.25, 390.3125)`, old minimum bound `(250.5, 108, 348.5)` instead of `(255.5625, 110.25, 379.8125)`, and old maximum bound `(271.5, 144, 369.5)` instead of `(276.5625, 146.25, 400.8125)`. The test compiled and reached each authored-value assertion, so fixture syntax and source interfaces matched production.
+
+## Fix round 4 GREEN
+
+The only production edit translates the fractal base center and bounds to the literals derived above. It leaves the radius, iterations, material, stable ID, rotation, and bounds dimensions unchanged. The same focused command then executed one test with zero failures.
+
+## Fix round 4 capture evidence
+
+`./scripts/build-app.sh` built and signed `dist/MicroCube Metal.app` before capture. Four release-app invocations used the fixed 1280 by 800 reset camera, all features, render scale 1, fixed step 1/120, and final or primitive-ID view. Each required time/view pair ran once.
+
+| Time | View | PNG | SHA-256 | Runtime overflows |
+| --- | --- | --- | --- | ---: |
+| 0 | final | `/tmp/microcube-task9a-round4-final-t0.png` | `48570f071b565d1c343bf3c6ae601e44c2e895bdb8f5d373cb8b390d83fa9d67` | 7,418 |
+| 1 | final | `/tmp/microcube-task9a-round4-final-t1.png` | `51651087165a8b898626dd12f0384f6fc64184e32b0cd66d7f8ec82b08422844` | 7,433 |
+| 0 | primitive-ID | `/tmp/microcube-task9a-round4-primitive-t0.png` | `23b8389d00ec31386e4aa819edf86a2f987066c5de72fe63f418261a78101a40` | 7,418 |
+| 1 | primitive-ID | `/tmp/microcube-task9a-round4-primitive-t1.png` | `d3c668121466d0e3641b9cfdf4a9f0609f7975705ea6891fbcd07ca4c42d48bc` | 7,433 |
+
+All four JSON reports record `status=pass`, `failure=null`, one window, two passes, all features, zero command errors, zero dropped drawables, and zero semaphore timeouts.
+
+Exact primitive-ID histograms produced these creature pixel counts:
+
+| Time | ID 2 | ID 3 | ID 4 | ID 5 | ID 6 | ID 7 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 6,146 | 1,368 | 3,412 | 3,075 | 1,360 | 2,355 |
+| 1 | 6,049 | 1,281 | 3,495 | 3,128 | 1,511 | 2,360 |
+
+Every creature remains above the 500-pixel gate. Each count and bounding box matches round 3, which confirms that all six creature positions stayed unchanged.
+
+The fractal has 4,661 pixels and bounding box `99x95+312+201` at both times. Its actual coverage is 0.455176% of the drawable, a 36.71% pixel reduction from round 3. Its box area fell 35.72%. At time 0, the nearest creature box begins at x=411 after the fractal box ends at x=410. At time 1, the nearest creature starts at y=341 after the fractal ends at y=295. The fractal box also remains separate from the sculpture and glass boxes. Visual inspection confirms a distinct upper-left silhouette, six separated creatures, and a visible upper-right slab in both final captures.
+
+The sculpture span remains `171x169+549+391`, the glass span remains `101x103+567+254`, and the terrain span remains `1280x578+0+0`. These values match the round-3 primitive-ID capture exactly, so the hero and terrain projection spans did not change.
+
+## Fix round 4 regressions and build
+
+Fresh commands after the production change and capture:
+
+```sh
+./scripts/test.sh --filter 'SceneDataTests/testHero'
+./scripts/test.sh --filter ShadowTraversalTests
+./scripts/test.sh --filter MixedTraversalTests
+./scripts/test.sh --filter VolumeProbeTests
+./scripts/test.sh
+./scripts/build-app.sh
+```
+
+- Focused hero tests: 6 passed.
+- `ShadowTraversalTests`: 2 passed, including zero false and missed exact-shadow occlusions.
+- `MixedTraversalTests`: 7 passed, including fixed traversal budgets.
+- `VolumeProbeTests`: 4 passed.
+- Full release suite: 95 passed with zero failures.
+- Final release app build: passed.
+
+## Fix round 4 benchmark and overflow disclosure
+
+The sole fresh acceptance benchmark used the fixed time-1 final view, 20 warmup frames, and 60 measured frames. No retry occurred.
+
+- Report: `/tmp/microcube-task9a-round4-benchmark.json`
+- Report SHA-256: `1391fef42a18567c785d2c943f0f02423f5c30f97cbfd7d3725270df2ece49d7`
+- p95: `6.3779583433642983 ms`
+- Gate: `5.997293750988319 ms`
+- Miss: `0.380664592375980 ms`, or 6.347273% above the gate.
+- Round-3 comparison: `+0.312958320137113 ms`, or 5.160071% slower than `6.065000023227185 ms`.
+- Runtime: `status=pass`, nominal thermal state before and after, 60 samples, one window, two passes, zero command errors, zero dropped drawables, and zero semaphore timeouts.
+
+Runtime budget overflows remain nonzero: 7,418 at capture time 0, 7,433 at capture time 1, and 7,425 in the benchmark. The placement reduced those counters by about 15.7% from round 3, but it did not eliminate them. The fixed-budget mixed-traversal probe still passes. I did not retry the failed benchmark or change a second production variable.
+
+## Fix round 4 status
+
+BLOCKED: the single fractal depth translation passes RED/GREEN, visual, coverage, creature, span, world-bounds, test, and build checks, but the only permitted benchmark exceeds the p95 gate.
+
+`git diff --check` passed with no output. The final diff contains only `SceneData.swift`, `SceneDataTests.swift`, and this report.

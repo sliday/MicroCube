@@ -80,7 +80,7 @@ final class SceneDataTests: XCTestCase {
         let scale: Float = 1.5
         let expectedSDFs: [(UInt32, SIMD3<Float>, Float, SIMD3<Float>, SIMD3<Float>)] = [
             (0, SIMD3<Float>(277.5, 96, 288.5), 10.5, SIMD3<Float>(267, 81, 278), SIMD3<Float>(288, 111, 299)),
-            (3, SIMD3<Float>(261, 126, 359), 10.5, SIMD3<Float>(250.5, 108, 348.5), SIMD3<Float>(271.5, 144, 369.5)),
+            (3, SIMD3<Float>(266.0625, 128.25, 390.3125), 10.5, SIMD3<Float>(255.5625, 110.25, 379.8125), SIMD3<Float>(276.5625, 146.25, 400.8125)),
             (4, SIMD3<Float>(286.5, 115.5, 306.5), 7.5, SIMD3<Float>(279, 108, 299), SIMD3<Float>(294, 123, 314))
         ]
         let originalCamera = SIMD3<Float>(256.5, 112, 256.5)
