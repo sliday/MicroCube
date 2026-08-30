@@ -637,6 +637,30 @@ inline bool traceMixedScene(texture3d<uint, access::read> voxels,
     );
 }
 
+inline bool traceOpticalScene(texture3d<uint, access::read> voxels,
+                              texture3d<uint, access::read> mixed,
+                              device const CellHeader *headers,
+                              device const uint *sdfRefs,
+                              device const uint *gaussianRefs,
+                              device const SDFInstance *sdfs,
+                              device const Gaussian *gaussians,
+                              constant SceneUniforms &scene,
+                              float3 origin,
+                              float3 direction,
+                              float maximumDistance,
+                              float time,
+                              thread HybridHit &hit,
+                              thread TraceCounts &counts,
+                              thread OpticalRayBudget &opticalBudget) {
+    if (opticalBudget.rayDepth != 0u) {
+        ++opticalBudget.recursiveSecondaryRayCount;
+    }
+    return traceMixedScene(
+        voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+        origin, direction, maximumDistance, time, hit, counts
+    );
+}
+
 inline bool traceOcclusionExact(texture3d<uint, access::read> volume,
                                 float3 origin,
                                 float3 direction,

@@ -420,10 +420,11 @@ kernel void raycastHybrid(
                 } else {
                     HybridHit secondaryHit;
                     TraceCounts secondaryCounts = {};
-                    bool secondaryFound = traceMixedScene(
+                    OpticalRayBudget secondaryOpticalBudget = {1u, 0u};
+                    bool secondaryFound = traceOpticalScene(
                         volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
                         path.secondaryOrigin, path.exitDirection, uniforms.cameraUpAndMaxDistance.w,
-                        uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts
+                        uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts, secondaryOpticalBudget
                     );
                     float3 transmittedColor = skyColor(path.exitDirection, sunDirection);
                     if (secondaryFound) {
@@ -432,7 +433,6 @@ kernel void raycastHybrid(
                         float3 secondaryBase = secondaryHit.primitiveKind == 0u
                             ? kPalette[min(secondaryHit.material, 42u)]
                             : materials[secondaryMaterial].baseColorRoughness.xyz;
-                        OpticalRayBudget secondaryOpticalBudget = {1u, 0u};
                         transmittedColor = shadeSecondaryHit(
                             path.secondaryOrigin + path.exitDirection * secondaryHit.t, secondaryHit.normal,
                             secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w, lights, scene,
@@ -453,10 +453,11 @@ kernel void raycastHybrid(
             float3 reflectionDirection = normalize(reflect(direction, hit.normal));
             HybridHit secondaryHit;
             TraceCounts secondaryCounts = {};
-            bool secondaryFound = traceMixedScene(
+            OpticalRayBudget secondaryOpticalBudget = {1u, 0u};
+            bool secondaryFound = traceOpticalScene(
                 volume, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
                 point + hit.normal * 0.01f, reflectionDirection, uniforms.cameraUpAndMaxDistance.w,
-                uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts
+                uniforms.cameraPositionAndTime.w, secondaryHit, secondaryCounts, secondaryOpticalBudget
             );
             float3 reflectionColor = skyColor(reflectionDirection, sunDirection);
             if (secondaryFound) {
@@ -465,7 +466,6 @@ kernel void raycastHybrid(
                 float3 secondaryBase = secondaryHit.primitiveKind == 0u
                     ? kPalette[min(secondaryHit.material, 42u)]
                     : materials[secondaryMaterial].baseColorRoughness.xyz;
-                OpticalRayBudget secondaryOpticalBudget = {1u, 0u};
                 reflectionColor = shadeSecondaryHit(
                     point + reflectionDirection * secondaryHit.t, secondaryHit.normal,
                     secondaryBase, sunDirection, uniforms.sunDirectionAndAmbient.w, lights, scene,

@@ -19,6 +19,10 @@ final class OpticsProbeTests: XCTestCase {
         XCTAssertEqual(try runOpticsProbe().instrumentedSecondaryLaunchCount, 1)
     }
 
+    func testSecondaryMixedSceneLaunchInstrumentationCountsRecursion() throws {
+        XCTAssertEqual(try runOpticsProbe().instrumentedSecondarySceneLaunchCount, 1)
+    }
+
     func testTotalInternalReflectionDoesNotLaunchAnInteriorSecondaryRay() throws {
         let report = try runOpticsProbe()
         XCTAssertEqual(report.tirSecondaryRayCount, 0)
@@ -31,6 +35,13 @@ final class OpticsProbeTests: XCTestCase {
             device float *output [[buffer(0)]],
             device const Light *lights [[buffer(1)]],
             constant SceneUniforms &scene [[buffer(2)]],
+            device const CellHeader *headers [[buffer(3)]],
+            device const uint *sdfRefs [[buffer(4)]],
+            device const uint *gaussianRefs [[buffer(5)]],
+            device const SDFInstance *sdfs [[buffer(6)]],
+            device const Gaussian *gaussians [[buffer(7)]],
+            texture3d<uint, access::read> voxels [[texture(0)]],
+            texture3d<uint, access::read> mixed [[texture(1)]],
             uint gid [[thread_position_in_grid]]) {
             if (gid != 0u) return;
             OpticalPath externalPath;
@@ -52,6 +63,14 @@ final class OpticsProbeTests: XCTestCase {
                 origin, direction, float3(0.0f), 1.0f, 1.5f, float3(0.18f, 0.07f, 0.03f),
                 instrumentedPath, instrumentedSecondaryBudget
             );
+            OpticalRayBudget instrumentedSceneBudget = {1u, 0u};
+            HybridHit sceneHit;
+            TraceCounts sceneCounts = {};
+            traceOpticalScene(
+                voxels, mixed, headers, sdfRefs, gaussianRefs, sdfs, gaussians, scene,
+                float3(-1.0f), float3(-1.0f, 0.0f, 0.0f), 1.0f, 0.0f,
+                sceneHit, sceneCounts, instrumentedSceneBudget
+            );
             shadeSecondaryHit(
                 float3(0.0f), float3(0.0f, 1.0f, 0.0f), float3(1.0f),
                 float3(0.0f, 1.0f, 0.0f), 0.42f, lights, scene, 0.0f, secondaryShadeBudget
@@ -71,12 +90,24 @@ final class OpticsProbeTests: XCTestCase {
             output[12] = totalInternalReflection ? length(internalPath.secondaryOrigin) : 0.0f;
             output[13] = instrumentedSecondaryLaunch
                 ? float(instrumentedSecondaryBudget.recursiveSecondaryRayCount) : NAN;
+            output[14] = float(instrumentedSceneBudget.recursiveSecondaryRayCount);
         }
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
         let pipeline = try MetalProbeHarness.makePipeline(name: "probeOptics", library: library, device: device)
-        let output = try XCTUnwrap(device.makeBuffer(length: 14 * MemoryLayout<Float>.stride, options: .storageModeShared))
+        let output = try XCTUnwrap(device.makeBuffer(length: 15 * MemoryLayout<Float>.stride, options: .storageModeShared))
         let lights = try XCTUnwrap(device.makeBuffer(length: MemoryLayout<Light>.stride, options: .storageModeShared))
+        let scratch = try XCTUnwrap(device.makeBuffer(length: 256, options: .storageModeShared))
+        let textureDescriptor = MTLTextureDescriptor()
+        textureDescriptor.textureType = .type3D
+        textureDescriptor.pixelFormat = .r8Uint
+        textureDescriptor.width = 1
+        textureDescriptor.height = 1
+        textureDescriptor.depth = 1
+        textureDescriptor.storageMode = .shared
+        textureDescriptor.usage = .shaderRead
+        let voxels = try XCTUnwrap(device.makeTexture(descriptor: textureDescriptor))
+        let mixed = try XCTUnwrap(device.makeTexture(descriptor: textureDescriptor))
         var scene = SceneUniforms(counts: .zero, grid: .zero, fog: .zero, budgets: .zero)
         let queue = try XCTUnwrap(device.makeCommandQueue())
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
@@ -85,13 +116,20 @@ final class OpticsProbeTests: XCTestCase {
         encoder.setBuffer(output, offset: 0, index: 0)
         encoder.setBuffer(lights, offset: 0, index: 1)
         encoder.setBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 2)
+        encoder.setBuffer(scratch, offset: 0, index: 3)
+        encoder.setBuffer(scratch, offset: 0, index: 4)
+        encoder.setBuffer(scratch, offset: 0, index: 5)
+        encoder.setBuffer(scratch, offset: 0, index: 6)
+        encoder.setBuffer(scratch, offset: 0, index: 7)
+        encoder.setTexture(voxels, index: 0)
+        encoder.setTexture(mixed, index: 1)
         encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, commandBuffer.error?.localizedDescription ?? "")
 
-        let values = output.contents().bindMemory(to: Float.self, capacity: 14)
+        let values = output.contents().bindMemory(to: Float.self, capacity: 15)
         let direction = SIMD3<Float>(1, 0, 0)
         let entryNormal = SIMD3<Float>(-sqrt(1 - 0.25 * 0.25), 0.25, 0)
         let expectedEntry = refract(direction, normal: entryNormal, eta: 1 / 1.5)
@@ -110,7 +148,8 @@ final class OpticsProbeTests: XCTestCase {
             tirSecondaryRayCount: Int(values[10]),
             recursiveSecondaryRayCount: Int(values[11]),
             tirSecondaryOriginDistance: values[12],
-            instrumentedSecondaryLaunchCount: Int(values[13])
+            instrumentedSecondaryLaunchCount: Int(values[13]),
+            instrumentedSecondarySceneLaunchCount: Int(values[14])
         )
     }
 
@@ -132,5 +171,6 @@ final class OpticsProbeTests: XCTestCase {
         let recursiveSecondaryRayCount: Int
         let tirSecondaryOriginDistance: Float
         let instrumentedSecondaryLaunchCount: Int
+        let instrumentedSecondarySceneLaunchCount: Int
     }
 }
