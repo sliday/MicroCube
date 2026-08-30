@@ -4,6 +4,72 @@ import MetalKit
 import QuartzCore
 import simd
 
+enum SceneGPUResourceError: Error {
+    case allocation(String)
+}
+
+struct SceneGPUResources {
+    let scene: SceneData
+    let mixedOccupancy: MTLTexture
+    let cellHeaders: MTLBuffer
+    let cellSDFRefs: MTLBuffer
+    let cellGaussianRefs: MTLBuffer
+    let sdfInstances: MTLBuffer
+    let gaussians: MTLBuffer
+    let lights: MTLBuffer
+    let materials: MTLBuffer
+    let activeVolumeCells: MTLBuffer
+
+    init(device: MTLDevice, scene: SceneData) throws {
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .r8Uint
+        descriptor.width = SceneData.gridDimension
+        descriptor.height = SceneData.gridDimension
+        descriptor.depth = SceneData.gridDimension
+        descriptor.mipmapLevelCount = 7
+        descriptor.storageMode = .private
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        guard let mixedOccupancy = device.makeTexture(descriptor: descriptor) else {
+            throw SceneGPUResourceError.allocation("mixed occupancy")
+        }
+
+        self.scene = scene
+        self.mixedOccupancy = mixedOccupancy
+        cellHeaders = try Self.makeBuffer(device: device, values: scene.cellHeaders, name: "cell headers")
+        cellSDFRefs = try Self.makeBuffer(device: device, values: scene.cellSDFRefs, name: "SDF references")
+        cellGaussianRefs = try Self.makeBuffer(device: device, values: scene.cellGaussianRefs, name: "Gaussian references")
+        sdfInstances = try Self.makeBuffer(device: device, values: scene.sdfInstances, name: "SDF instances")
+        gaussians = try Self.makeBuffer(device: device, values: scene.gaussians, name: "Gaussians")
+        lights = try Self.makeBuffer(device: device, values: scene.lights, name: "lights")
+        materials = try Self.makeBuffer(device: device, values: scene.materials, name: "materials")
+        activeVolumeCells = try Self.makeBuffer(
+            device: device,
+            values: scene.activeVolumeCells,
+            name: "active volume cells"
+        )
+    }
+
+    private static func makeBuffer<T>(device: MTLDevice, values: [T], name: String) throws -> MTLBuffer {
+        if values.isEmpty {
+            guard let buffer = device.makeBuffer(length: max(1, MemoryLayout<T>.stride), options: .storageModeShared) else {
+                throw SceneGPUResourceError.allocation(name)
+            }
+            return buffer
+        }
+        return try values.withUnsafeBytes { bytes in
+            guard let buffer = device.makeBuffer(
+                bytes: bytes.baseAddress!,
+                length: bytes.count,
+                options: .storageModeShared
+            ) else {
+                throw SceneGPUResourceError.allocation(name)
+            }
+            return buffer
+        }
+    }
+}
+
 final class Renderer: NSObject, MTKViewDelegate {
     private enum KeyCode {
         static let a: UInt16 = 0
@@ -28,8 +94,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let hudUpdate: (String) -> Void
     private let commandQueue: MTLCommandQueue
     private let volumeTexture: MTLTexture
+    private let sceneResources: SceneGPUResources
     private let terrainPipeline: MTLComputePipelineState
     private let reductionPipeline: MTLComputePipelineState
+    private let mixedBuildPipeline: MTLComputePipelineState
+    private let mixedReductionPipeline: MTLComputePipelineState
     private let raycastPipeline: MTLComputePipelineState
     private let raycastThreadgroupSize: MTLSize
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
@@ -58,11 +127,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         let library: MTLLibrary
         let terrainPipeline: MTLComputePipelineState
         let reductionPipeline: MTLComputePipelineState
+        let mixedBuildPipeline: MTLComputePipelineState
+        let mixedReductionPipeline: MTLComputePipelineState
         let raycastPipeline: MTLComputePipelineState
         do {
             library = try Renderer.makeLibrary(device: device)
             terrainPipeline = try Renderer.makePipeline(name: "generateTerrain", library: library, device: device)
             reductionPipeline = try Renderer.makePipeline(name: "reduceOccupancy", library: library, device: device)
+            mixedBuildPipeline = try Renderer.makePipeline(name: "buildMixedOccupancy", library: library, device: device)
+            mixedReductionPipeline = try Renderer.makePipeline(name: "reduceMixedOccupancy", library: library, device: device)
             raycastPipeline = try Renderer.makePipeline(name: "raycastHybrid", library: library, device: device)
         } catch {
             return nil
@@ -80,13 +153,22 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard let volumeTexture = device.makeTexture(descriptor: volumeDescriptor) else {
             return nil
         }
+        let sceneResources: SceneGPUResources
+        do {
+            sceneResources = try SceneGPUResources(device: device, scene: SceneData.makeHero())
+        } catch {
+            return nil
+        }
 
         self.input = input
         self.hudUpdate = hudUpdate
         self.commandQueue = commandQueue
         self.volumeTexture = volumeTexture
+        self.sceneResources = sceneResources
         self.terrainPipeline = terrainPipeline
         self.reductionPipeline = reductionPipeline
+        self.mixedBuildPipeline = mixedBuildPipeline
+        self.mixedReductionPipeline = mixedReductionPipeline
         self.raycastPipeline = raycastPipeline
         self.raycastThreadgroupSize = Renderer.make2DThreadgroupSize(for: raycastPipeline)
         self.metalView = metalView
@@ -243,6 +325,48 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.dispatchThreads(
                 MTLSize(width: destination.width, height: destination.height, depth: destination.depth),
                 threadsPerThreadgroup: Renderer.make3DThreadgroupSize(for: reductionPipeline)
+            )
+            encoder.endEncoding()
+        }
+
+        guard let mixedEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            return false
+        }
+        mixedEncoder.label = "Build mixed occupancy"
+        mixedEncoder.setComputePipelineState(mixedBuildPipeline)
+        mixedEncoder.setTexture(volumeTexture, index: 0)
+        mixedEncoder.setTexture(sceneResources.mixedOccupancy, index: 1)
+        mixedEncoder.setBuffer(sceneResources.cellHeaders, offset: 0, index: 0)
+        mixedEncoder.setBuffer(sceneResources.cellSDFRefs, offset: 0, index: 1)
+        mixedEncoder.setBuffer(sceneResources.sdfInstances, offset: 0, index: 2)
+        mixedEncoder.dispatchThreads(
+            MTLSize(width: 64, height: 64, depth: 64),
+            threadsPerThreadgroup: Renderer.make3DThreadgroupSize(for: mixedBuildPipeline)
+        )
+        mixedEncoder.endEncoding()
+
+        for destinationLevel in 1..<sceneResources.mixedOccupancy.mipmapLevelCount {
+            guard let source = sceneResources.mixedOccupancy.makeTextureView(
+                pixelFormat: .r8Uint,
+                textureType: .type3D,
+                levels: (destinationLevel - 1)..<destinationLevel,
+                slices: 0..<1
+            ), let destination = sceneResources.mixedOccupancy.makeTextureView(
+                pixelFormat: .r8Uint,
+                textureType: .type3D,
+                levels: destinationLevel..<(destinationLevel + 1),
+                slices: 0..<1
+            ), let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                return false
+            }
+
+            encoder.label = "Reduce mixed occupancy mip \(destinationLevel)"
+            encoder.setComputePipelineState(mixedReductionPipeline)
+            encoder.setTexture(source, index: 0)
+            encoder.setTexture(destination, index: 1)
+            encoder.dispatchThreads(
+                MTLSize(width: destination.width, height: destination.height, depth: destination.depth),
+                threadsPerThreadgroup: Renderer.make3DThreadgroupSize(for: mixedReductionPipeline)
             )
             encoder.endEncoding()
         }

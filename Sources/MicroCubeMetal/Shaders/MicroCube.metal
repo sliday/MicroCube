@@ -157,11 +157,25 @@ kernel void reduceOccupancy(texture3d<uint, access::read> source [[texture(0)]],
 
 kernel void buildMixedOccupancy(texture3d<uint, access::read> voxels [[texture(0)]],
                                 texture3d<uint, access::write> mixed [[texture(1)]],
+                                device const CellHeader *headers [[buffer(0)]],
+                                device const uint *cellSDFRefs [[buffer(1)]],
+                                device const SDFInstance *sdfs [[buffer(2)]],
                                 uint3 gid [[thread_position_in_grid]]) {
     if (any(gid >= uint3(64u))) {
         return;
     }
-    mixed.write(uint4(voxels.read(gid, 3u).x != 0u), gid);
+    uint index = gid.x + 64u * (gid.y + 64u * gid.z);
+    CellHeader header = headers[index];
+    uint flags = voxels.read(gid, 3u).x != 0u ? 1u : 0u;
+    uint sdfCount = header.packedCounts & 0xffffu;
+    flags |= sdfCount != 0u ? 2u : 0u;
+    flags |= (header.packedCounts >> 16u) != 0u ? 4u : 0u;
+    for (uint i = 0u; i < sdfCount; ++i) {
+        uint4 metadata = sdfs[cellSDFRefs[header.sdfOffset + i]].metadata;
+        flags |= (metadata.z & SDF_FLAG_EMISSIVE) != 0u ? 8u : 0u;
+        flags |= metadata.x == SDF_KIND_FRACTAL ? 16u : 0u;
+    }
+    mixed.write(uint4(flags), gid);
 }
 
 kernel void reduceMixedOccupancy(texture3d<uint, access::read> source [[texture(0)]],

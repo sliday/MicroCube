@@ -4,6 +4,8 @@ using namespace metal;
 constant uint kWorldSize = 512u;
 constant uint kTopMip = 9u;
 constant float kTraceEpsilon = 0.001f;
+constant uint SDF_FLAG_EMISSIVE = 1u;
+constant uint SDF_KIND_FRACTAL = 3u;
 
 struct FrameUniforms {
     float4 cameraPositionAndTime;
