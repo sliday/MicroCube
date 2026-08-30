@@ -113,6 +113,7 @@ struct OpticalPath {
     float3 transmission;
     float3 secondaryOrigin;
     uint totalInternalReflection;
+    uint canTraceSecondary;
 };
 
 inline bool traceOpticalSphere(float3 origin,
@@ -142,13 +143,14 @@ inline bool traceOpticalSphere(float3 origin,
     float3 entryNormal = normalize(entryPoint - center);
     path.reflectionDirection = normalize(reflect(direction, entryNormal));
     path.totalInternalReflection = 0u;
+    path.canTraceSecondary = 0u;
 
     if (originInside) {
         float3 exitDirection = refract(direction, -entryNormal, safeIOR);
         if (length_squared(exitDirection) <= 1.0e-8f) {
             path.entryDirection = direction;
             path.exitDirection = path.reflectionDirection;
-            path.secondaryOrigin = entryPoint + path.reflectionDirection * 0.01f;
+            path.secondaryOrigin = entryPoint + entryNormal * 0.01f;
             path.transmission = exp(-max(absorption, float3(0.0f)) * entryT);
             path.totalInternalReflection = 1u;
             return true;
@@ -157,6 +159,7 @@ inline bool traceOpticalSphere(float3 origin,
         path.exitDirection = normalize(exitDirection);
         path.secondaryOrigin = entryPoint + path.exitDirection * 0.01f;
         path.transmission = exp(-max(absorption, float3(0.0f)) * entryT);
+        path.canTraceSecondary = 1u;
         return true;
     }
 
@@ -182,12 +185,13 @@ inline bool traceOpticalSphere(float3 origin,
     path.transmission = exp(-max(absorption, float3(0.0f)) * exitT);
     if (length_squared(exitDirection) <= 1.0e-8f) {
         path.exitDirection = normalize(reflect(insideDirection, exitNormal));
-        path.secondaryOrigin = exitPoint + path.exitDirection * 0.01f;
+        path.secondaryOrigin = exitPoint + exitNormal * 0.01f;
         path.totalInternalReflection = 1u;
         return true;
     }
     path.exitDirection = normalize(exitDirection);
     path.secondaryOrigin = exitPoint + path.exitDirection * 0.01f;
+    path.canTraceSecondary = 1u;
     return true;
 }
 
