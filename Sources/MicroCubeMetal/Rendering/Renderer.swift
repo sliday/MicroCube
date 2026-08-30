@@ -63,7 +63,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             library = try Renderer.makeLibrary(device: device)
             terrainPipeline = try Renderer.makePipeline(name: "generateTerrain", library: library, device: device)
             reductionPipeline = try Renderer.makePipeline(name: "reduceOccupancy", library: library, device: device)
-            raycastPipeline = try Renderer.makePipeline(name: "raycast", library: library, device: device)
+            raycastPipeline = try Renderer.makePipeline(name: "raycastHybrid", library: library, device: device)
         } catch {
             return nil
         }
@@ -168,20 +168,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private static func makeLibrary(device: MTLDevice) throws -> MTLLibrary {
-        if let library = try? device.makeDefaultLibrary(bundle: Bundle.module) {
-            return library
-        }
-
-        let sourceURL = Bundle.module.url(
-            forResource: "MicroCube",
-            withExtension: "metal",
-            subdirectory: "Shaders"
-        ) ?? Bundle.module.url(forResource: "MicroCube", withExtension: "metal")
-        guard let sourceURL else {
-            throw RendererError.missingShaderSource
-        }
-
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let source = try ShaderSourceLoader.load()
         let options = MTLCompileOptions()
         if #available(macOS 15.0, *) {
             options.mathMode = .fast

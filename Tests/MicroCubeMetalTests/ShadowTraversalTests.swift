@@ -10,7 +10,7 @@ final class ShadowTraversalTests: XCTestCase {
         let library = try makeLibrary(device: device)
         let fixturePipeline = try makePipeline(name: "generateShadowFixture", library: library, device: device)
         let reductionPipeline = try makePipeline(name: "reduceOccupancy", library: library, device: device)
-        let raycastPipeline = try makePipeline(name: "raycast", library: library, device: device)
+        let raycastPipeline = try makePipeline(name: "raycastHybrid", library: library, device: device)
         let commandQueue = try XCTUnwrap(device.makeCommandQueue())
 
         let clearPath = try render(
@@ -36,13 +36,7 @@ final class ShadowTraversalTests: XCTestCase {
     }
 
     private func makeLibrary(device: MTLDevice) throws -> MTLLibrary {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let shaderURL = projectRoot
-            .appendingPathComponent("Sources/MicroCubeMetal/Shaders/MicroCube.metal")
-        var source = try String(contentsOf: shaderURL, encoding: .utf8)
+        var source = try ShaderSourceLoader.load()
         source += """
 
         kernel void generateShadowFixture(

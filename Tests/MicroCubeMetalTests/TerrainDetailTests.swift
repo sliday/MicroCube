@@ -1,5 +1,6 @@
 import Metal
 import XCTest
+@testable import MicroCubeMetal
 
 final class TerrainDetailTests: XCTestCase {
     func testGeneratedSurfaceUsesSingleVoxelHeightResolution() throws {
@@ -53,13 +54,7 @@ final class TerrainDetailTests: XCTestCase {
     }
 
     private func makeLibrary(device: MTLDevice) throws -> MTLLibrary {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let shaderURL = projectRoot
-            .appendingPathComponent("Sources/MicroCubeMetal/Shaders/MicroCube.metal")
-        var source = try String(contentsOf: shaderURL, encoding: .utf8)
+        var source = try ShaderSourceLoader.load()
         source += """
 
         kernel void probeTerrainSurfaceDetail(

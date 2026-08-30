@@ -1,6 +1,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
+constant uint kWorldSize = 512u;
+constant uint kTopMip = 9u;
+constant float kTraceEpsilon = 0.001f;
+
 struct FrameUniforms {
     float4 cameraPositionAndTime;
     float4 cameraForwardAndFOV;
@@ -65,4 +69,11 @@ struct FrameCounters {
     atomic_uint volumeLocalShadows;
     atomic_uint budgetOverflows;
     atomic_uint reserved;
+};
+
+struct TraceHit {
+    float t;
+    int3 voxel;
+    float3 normal;
+    uint material;
 };
