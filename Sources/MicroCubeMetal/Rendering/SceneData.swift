@@ -10,6 +10,8 @@ enum SceneBuildError: Error, Equatable {
 struct SceneData {
     static let gridDimension = 64
     static let leafSize: Float = 8
+    static let heroPresentationScale: Float = 1.5
+    static let heroAnchor = SIMD3<Float>(288, 102, 302)
 
     let cellHeaders: [CellHeader]
     let cellSDFRefs: [UInt32]
@@ -21,26 +23,32 @@ struct SceneData {
     let activeVolumeCells: [UInt32]
 
     static func makeHero() throws -> SceneData {
+        let scalePoint: (SIMD3<Float>) -> SIMD3<Float> = { point in
+            heroAnchor + (point - heroAnchor) * heroPresentationScale
+        }
+        let sculptureCenter = scalePoint(SIMD3<Float>(281, 98, 293))
         let sculpture = SDFInstance(
-            sweptBoundsMin: SIMD4<Float>(274, 88, 286, 0),
-            sweptBoundsMax: SIMD4<Float>(288, 108, 300, 0),
-            positionScale: SIMD4<Float>(281, 98, 293, 7),
+            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(274, 88, 286)), 0),
+            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(288, 108, 300)), 0),
+            positionScale: SIMD4<Float>(sculptureCenter, 7 * heroPresentationScale),
             rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
             parameters: SIMD4<Float>(5, 8, 2, 0),
             metadata: SIMD4<UInt32>(0, 1, 0, 0)
         )
+        let fractalCenter = scalePoint(SIMD3<Float>(299, 98, 321))
         let fractal = SDFInstance(
-            sweptBoundsMin: SIMD4<Float>(292, 86, 314, 0),
-            sweptBoundsMax: SIMD4<Float>(306, 110, 328, 0),
-            positionScale: SIMD4<Float>(299, 98, 321, 7),
+            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(292, 86, 314)), 0),
+            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(306, 110, 328)), 0),
+            positionScale: SIMD4<Float>(fractalCenter, 7 * heroPresentationScale),
             rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
             parameters: SIMD4<Float>(8, 0, 0, 0),
             metadata: SIMD4<UInt32>(3, 2, 0, 1)
         )
+        let glassSphereCenter = scalePoint(SIMD3<Float>(287, 111, 305))
         let glassSphere = SDFInstance(
-            sweptBoundsMin: SIMD4<Float>(282, 106, 300, 0),
-            sweptBoundsMax: SIMD4<Float>(292, 116, 310, 0),
-            positionScale: SIMD4<Float>(287, 111, 305, 5),
+            sweptBoundsMin: SIMD4<Float>(scalePoint(SIMD3<Float>(282, 106, 300)), 0),
+            sweptBoundsMax: SIMD4<Float>(scalePoint(SIMD3<Float>(292, 116, 310)), 0),
+            positionScale: SIMD4<Float>(glassSphereCenter, 5 * heroPresentationScale),
             rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
             parameters: .zero,
             metadata: SIMD4<UInt32>(4, 4, 0, 8)
@@ -54,12 +62,26 @@ struct SceneData {
             SIMD3<Float>(299, 95, 308)
         ]
         let creatures = creatureCenters.enumerated().map { index, center in
-            SDFInstance(
-                sweptBoundsMin: SIMD4<Float>(center.x - 5, center.y - 11, center.z - 5, 0),
-                sweptBoundsMax: SIMD4<Float>(center.x + 5, center.y + 11, center.z + 5, 0),
-                positionScale: SIMD4<Float>(center.x, center.y, center.z, 3),
+            let scaledCenter = scalePoint(center)
+            let lowerExtent = center.y - 12 * 0.5 - 3 * 0.32
+            let creatureCenter = SIMD3<Float>(
+                scaledCenter.x,
+                lowerExtent + 18 * 0.5 + 4.5 * 0.32,
+                scaledCenter.z
+            )
+            let scaledBoundsMin = scalePoint(SIMD3<Float>(center.x - 5, center.y - 11, center.z - 5))
+            let scaledBoundsMax = scalePoint(SIMD3<Float>(center.x + 5, center.y + 11, center.z + 5))
+            return SDFInstance(
+                sweptBoundsMin: SIMD4<Float>(scaledBoundsMin, 0),
+                sweptBoundsMax: SIMD4<Float>(
+                    scaledBoundsMax.x,
+                    max(scaledBoundsMax.y, creatureCenter.y + 18 * 0.55 + 4.5 * 0.48 + 0.22),
+                    scaledBoundsMax.z,
+                    0
+                ),
+                positionScale: SIMD4<Float>(creatureCenter, 4.5),
                 rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
-                parameters: SIMD4<Float>(12, Float(index) * 0.83, 0, 0),
+                parameters: SIMD4<Float>(18, Float(index) * 0.83, 0, 0),
                 metadata: SIMD4<UInt32>(1, 3, 1, UInt32(index + 2))
             )
         }
@@ -71,23 +93,33 @@ struct SceneData {
             SIMD3<Float>(1.0, 0.62, 0.12),
             SIMD3<Float>(0.54, 0.28, 1.0)
         ]
-        let lights = creatureCenters.enumerated().map { index, center in
+        let lights = creatures.enumerated().map { index, creature in
             let color = lightColors[index]
             return Light(
-                positionRadius: SIMD4<Float>(center.x, center.y + 7.2, center.z, 22),
+                positionRadius: SIMD4<Float>(
+                    creature.positionScale.x,
+                    creature.positionScale.y + 10.8,
+                    creature.positionScale.z,
+                    33
+                ),
                 colorIntensity: SIMD4<Float>(color.x, color.y, color.z, 10)
             )
         }
         let gaussians = (0..<8).map { index -> Gaussian in
             let angle = Float(index) * (.pi * 2 / 8)
+            let center = scalePoint(SIMD3<Float>(
+                283 + cos(angle) * 9,
+                96 + Float(index % 2) * 4,
+                302 + sin(angle) * 7
+            ))
             return Gaussian(
                 localCenterSigma: SIMD4<Float>(
-                    283 + cos(angle) * 9,
-                    96 + Float(index % 2) * 4,
-                    302 + sin(angle) * 7,
-                    3.2
+                    center.x,
+                    center.y,
+                    center.z,
+                    3.2 * heroPresentationScale
                 ),
-                colorDensity: SIMD4<Float>(0.52, 0.64, 0.72, 0.34),
+                colorDensity: SIMD4<Float>(0.52, 0.64, 0.72, 0.34 / heroPresentationScale),
                 motionPhase: SIMD4<Float>(angle, Float(index % 3), 0, Float(index))
             )
         }

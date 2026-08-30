@@ -133,7 +133,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private static let worldSize = 512
-    private static let initialCameraPosition = SIMD3<Float>(256.5, 112.0, 256.5)
+    static let initialCameraPosition = SIMD3<Float>(240.75, 117.0, 233.75)
     private static let initialYaw: Float = 0.6
     private static let initialPitch: Float = -0.18
 

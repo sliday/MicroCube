@@ -30,6 +30,104 @@ final class SceneDataTests: XCTestCase {
         XCTAssertEqual(scene.lights.count, 6)
     }
 
+    func testHeroPresentationScaleKeepsCreaturesGroundedAndAttachedLightsAligned() throws {
+        let scene = try SceneData.makeHero()
+        let anchor = SIMD3<Float>(288, 102, 302)
+        let scale: Float = 1.5
+        let originalCreatureCenters = [
+            SIMD3<Float>(270, 96, 292),
+            SIMD3<Float>(281, 95, 300),
+            SIMD3<Float>(293, 96, 294),
+            SIMD3<Float>(275, 95, 310),
+            SIMD3<Float>(287, 96, 316),
+            SIMD3<Float>(299, 95, 308)
+        ]
+        let creatures = scene.sdfInstances.filter { $0.metadata.x == 1 }
+
+        XCTAssertEqual(SceneData.heroPresentationScale, scale)
+        XCTAssertEqual(SceneData.heroAnchor, anchor)
+        XCTAssertEqual(creatures.count, originalCreatureCenters.count)
+        XCTAssertEqual(scene.lights.count, creatures.count)
+
+        for (index, originalCenter) in originalCreatureCenters.enumerated() {
+            let creature = creatures[index]
+            let light = scene.lights[index]
+            let expectedCenter = anchor + (originalCenter - anchor) * scale
+            let originalLowerExtent = originalCenter.y - 12 * 0.5 - 3 * 0.32
+            let lowerExtent = creature.positionScale.y
+                - creature.parameters.x * 0.5
+                - creature.positionScale.w * 0.32
+
+            XCTAssertEqual(creature.positionScale.x, expectedCenter.x, accuracy: 0.0001)
+            XCTAssertEqual(creature.positionScale.z, expectedCenter.z, accuracy: 0.0001)
+            XCTAssertEqual(creature.positionScale.w, 4.5, accuracy: 0.0001)
+            XCTAssertEqual(creature.parameters.x, 18, accuracy: 0.0001)
+            XCTAssertEqual(lowerExtent, originalLowerExtent, accuracy: 0.0001)
+            XCTAssertEqual(light.positionRadius.x, creature.positionScale.x, accuracy: 0.0001)
+            XCTAssertEqual(light.positionRadius.y - creature.positionScale.y, 10.8, accuracy: 0.0001)
+            XCTAssertEqual(light.positionRadius.z, creature.positionScale.z, accuracy: 0.0001)
+            XCTAssertEqual(light.positionRadius.w, 33, accuracy: 0.0001)
+        }
+    }
+
+    func testHeroPresentationScaleExpandsSDFsAndGaussiansWithinWorldBounds() throws {
+        let scene = try SceneData.makeHero()
+        let anchor = SIMD3<Float>(288, 102, 302)
+        let scale: Float = 1.5
+        let originalSDFs: [(UInt32, SIMD3<Float>, Float, SIMD3<Float>, SIMD3<Float>)] = [
+            (0, SIMD3<Float>(281, 98, 293), 7, SIMD3<Float>(274, 88, 286), SIMD3<Float>(288, 108, 300)),
+            (3, SIMD3<Float>(299, 98, 321), 7, SIMD3<Float>(292, 86, 314), SIMD3<Float>(306, 110, 328)),
+            (4, SIMD3<Float>(287, 111, 305), 5, SIMD3<Float>(282, 106, 300), SIMD3<Float>(292, 116, 310))
+        ]
+        let originalGaussianCenter = SIMD3<Float>(292, 96, 302)
+        let expectedGaussianCenter = anchor + (originalGaussianCenter - anchor) * scale
+        let gaussian = try XCTUnwrap(scene.gaussians.first)
+        let originalCamera = SIMD3<Float>(256.5, 112, 256.5)
+        let dollyCamera = anchor + (originalCamera - anchor) * scale
+
+        XCTAssertEqual(gaussian.localCenterSigma.x, expectedGaussianCenter.x, accuracy: 0.0001)
+        XCTAssertEqual(gaussian.localCenterSigma.y, expectedGaussianCenter.y, accuracy: 0.0001)
+        XCTAssertEqual(gaussian.localCenterSigma.z, expectedGaussianCenter.z, accuracy: 0.0001)
+        XCTAssertEqual(gaussian.localCenterSigma.w, 4.8, accuracy: 0.0001)
+        XCTAssertEqual(gaussian.colorDensity.w, 0.34 / 1.5, accuracy: 0.0001)
+        XCTAssertEqual(dollyCamera, SIMD3<Float>(240.75, 117, 233.75))
+        XCTAssertEqual(Renderer.initialCameraPosition, dollyCamera)
+
+        for (kind, center, radius, minimum, maximum) in originalSDFs {
+            let instance = try XCTUnwrap(scene.sdfInstances.first { $0.metadata.x == kind })
+            let expectedCenter = anchor + (center - anchor) * scale
+            XCTAssertEqual(instance.positionScale.x, expectedCenter.x, accuracy: 0.0001)
+            XCTAssertEqual(instance.positionScale.y, expectedCenter.y, accuracy: 0.0001)
+            XCTAssertEqual(instance.positionScale.z, expectedCenter.z, accuracy: 0.0001)
+            XCTAssertEqual(instance.positionScale.w, radius * scale, accuracy: 0.0001)
+            XCTAssertEqual(
+                SIMD3<Float>(instance.sweptBoundsMin.x, instance.sweptBoundsMin.y, instance.sweptBoundsMin.z),
+                anchor + (minimum - anchor) * scale
+            )
+            XCTAssertEqual(
+                SIMD3<Float>(instance.sweptBoundsMax.x, instance.sweptBoundsMax.y, instance.sweptBoundsMax.z),
+                anchor + (maximum - anchor) * scale
+            )
+        }
+        for instance in scene.sdfInstances {
+            XCTAssertGreaterThanOrEqual(instance.sweptBoundsMin.x, 0)
+            XCTAssertGreaterThanOrEqual(instance.sweptBoundsMin.y, 0)
+            XCTAssertGreaterThanOrEqual(instance.sweptBoundsMin.z, 0)
+            XCTAssertLessThanOrEqual(instance.sweptBoundsMax.x, 512)
+            XCTAssertLessThanOrEqual(instance.sweptBoundsMax.y, 512)
+            XCTAssertLessThanOrEqual(instance.sweptBoundsMax.z, 512)
+        }
+        for gaussian in scene.gaussians {
+            let radius = gaussian.localCenterSigma.w * 3
+            XCTAssertGreaterThanOrEqual(gaussian.localCenterSigma.x - radius, 0)
+            XCTAssertGreaterThanOrEqual(gaussian.localCenterSigma.y - radius, 0)
+            XCTAssertGreaterThanOrEqual(gaussian.localCenterSigma.z - radius, 0)
+            XCTAssertLessThanOrEqual(gaussian.localCenterSigma.x + radius, 512)
+            XCTAssertLessThanOrEqual(gaussian.localCenterSigma.y + radius, 512)
+            XCTAssertLessThanOrEqual(gaussian.localCenterSigma.z + radius, 512)
+        }
+    }
+
     func testCellHeaderPacksCountsAndReferencesInStableIDOrder() throws {
         let scene = try SceneData.build(
             sdfInstances: [makeSDF(stableID: 9), makeSDF(stableID: 2)],
