@@ -37,18 +37,43 @@ func effectiveRenderState(_ state: RenderState, reduceMotion: Bool) -> RenderSta
     return effective
 }
 
+struct AccessibilityDisplayOptions: Equatable {
+    var increasedContrast: Bool
+    var reduceMotion: Bool
+
+    static var current: Self {
+        Self(
+            increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+    }
+}
+
+func postAccessibilityAnnouncement(_ announcement: String) {
+    NSAccessibility.post(
+        element: NSApplication.shared,
+        notification: .announcementRequested,
+        userInfo:
+        [
+            .announcement: announcement,
+            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+        ]
+    )
+}
+
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let input = InputState()
+    private let accessibilityDisplayOptionsProvider: () -> AccessibilityDisplayOptions
     private(set) var renderState = RenderState()
-    private var window: NSWindow?
-    private var metalView: MetalInputView?
-    private var renderer: Renderer?
-    private weak var hudOverlay: NSView?
+    private(set) var window: NSWindow?
+    private(set) var metalView: MetalInputView?
+    private(set) var renderer: Renderer?
+    private(set) weak var hudOverlay: NSView?
     private weak var hudLabel: NSTextField?
     private weak var legendLabel: NSTextField?
-    private weak var explainerPanel: ExplainerPanel?
-    private weak var explainerRail: NSButton?
+    private(set) weak var explainerPanel: ExplainerPanel?
+    private(set) weak var explainerRail: NSButton?
     private var hudPanelClearanceConstraint: NSLayoutConstraint?
     private(set) var hudTrailingAnchor: NSLayoutXAxisAnchor?
     var onHUDTrailingAnchorReady: ((NSLayoutXAxisAnchor) -> Void)? {
@@ -59,16 +84,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     var onRenderStateChanged: ((RenderState) -> Void)?
-    var accessibilityAnnouncementHandler: (String) -> Void = { announcement in
-        NSAccessibility.post(
-            element: NSApplication.shared,
-            notification: .announcementRequested,
-            userInfo:
-            [
-                .announcement: announcement,
-                .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-            ]
-        )
+    var accessibilityAnnouncementHandler: (String) -> Void
+
+    init(
+        accessibilityDisplayOptionsProvider: @escaping () -> AccessibilityDisplayOptions = { .current },
+        accessibilityAnnouncementPoster: @escaping (String) -> Void = postAccessibilityAnnouncement
+    ) {
+        self.accessibilityDisplayOptionsProvider = accessibilityDisplayOptionsProvider
+        accessibilityAnnouncementHandler = { announcement in
+            accessibilityAnnouncementPoster(announcement)
+        }
+        super.init()
     }
 
     static func main() {
@@ -134,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApplication.shared.mainMenu = mainMenu
     }
 
-    private func configureWindow() {
+    func configureWindow() {
         let contentRect = NSRect(x: 0, y: 0, width: 1280, height: 800)
         let window = RendererShortcutWindow(
             contentRect: contentRect,
@@ -236,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             labelWithString: captureLegend(captured: false)
         )
         controlsLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        let legendAlpha = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 1.0 : 0.8
+        let legendAlpha = accessibilityDisplayOptionsProvider().increasedContrast ? 1.0 : 0.8
         controlsLabel.textColor = NSColor.white.withAlphaComponent(legendAlpha)
         controlsLabel.maximumNumberOfLines = 2
         controlsLabel.lineBreakMode = .byWordWrapping
@@ -279,6 +305,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         container.addSubview(rail, positioned: .above, relativeTo: panel)
         explainerPanel = panel
         explainerRail = rail
+        panel.apply(renderState: renderState)
+        panel.updateAppearance(increasedContrast: accessibilityDisplayOptionsProvider().increasedContrast)
 
         NSLayoutConstraint.activate([
             panel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -352,21 +380,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             explainerPanel?.isHidden = true
             explainerRail?.isHidden = true
             hudPanelClearanceConstraint?.isActive = false
+            metalView?.nextKeyView = nil
+            explainerRail?.nextKeyView = nil
         case .rail:
             explainerPanel?.isHidden = true
             explainerRail?.isHidden = false
             hudPanelClearanceConstraint?.isActive = false
+            metalView?.nextKeyView = explainerRail
+            explainerRail?.nextKeyView = metalView
         case .panel:
             explainerPanel?.isHidden = false
             explainerRail?.isHidden = true
             hudPanelClearanceConstraint?.isActive = true
+            metalView?.nextKeyView = nil
+            explainerRail?.nextKeyView = nil
         }
     }
 
     private func setRendererState() {
+        let options = accessibilityDisplayOptionsProvider()
         renderer?.setRenderState(effectiveRenderState(
             renderState,
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            reduceMotion: options.reduceMotion
         ))
     }
 
@@ -382,15 +417,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func accessibilityDisplayOptionsDidChange() {
-        explainerPanel?.updateAppearance(
-            increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-        )
+        let options = accessibilityDisplayOptionsProvider()
+        explainerPanel?.updateAppearance(increasedContrast: options.increasedContrast)
         setRendererState()
     }
 
     @discardableResult
     func handleRenderAction(_ action: RenderAction) -> Bool {
         let consumed = renderState.apply(action)
+        explainerPanel?.apply(renderState: renderState)
+        setRendererState()
         switch action {
         case .toggleFullscreen:
             window?.toggleFullScreen(nil)
@@ -403,26 +439,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             updateExplainerLayout()
             if renderState.explainerVisible {
                 metalView?.releaseMouse()
+                window?.makeFirstResponder(explainerPanel?.closeButton)
                 accessibilityAnnouncementHandler("Why Rays explainer opened.")
-            } else if let metalView {
-                window?.makeFirstResponder(metalView)
-                if action == .toggleExplainer || consumed {
-                    accessibilityAnnouncementHandler("Why Rays explainer closed.")
+            } else if action == .toggleExplainer || consumed {
+                switch ExplainerLayout.presentation(
+                    windowWidth: window?.contentLayoutRect.width ?? 1100,
+                    explainerVisible: false
+                ) {
+                case .rail:
+                    window?.makeFirstResponder(explainerRail)
+                case .hidden, .panel:
+                    window?.makeFirstResponder(metalView)
                 }
+                accessibilityAnnouncementHandler("Why Rays explainer closed.")
             }
         case .togglePause:
-            accessibilityAnnouncementHandler(
-                renderState.paused
-                    ? "Scene motion paused. Camera remains active."
-                    : "Scene motion resumed."
+            let effective = renderer?.currentRenderState() ?? effectiveRenderState(
+                renderState,
+                reduceMotion: accessibilityDisplayOptionsProvider().reduceMotion
             )
+            if renderState.paused {
+                accessibilityAnnouncementHandler("Scene motion paused. Camera remains active.")
+            } else if effective.paused {
+                accessibilityAnnouncementHandler("Scene motion remains held by Reduce Motion. Camera remains active.")
+            } else {
+                accessibilityAnnouncementHandler("Scene motion resumed.")
+            }
         case .evidence(let view):
             accessibilityAnnouncementHandler("Evidence view changed to \(view.title).")
         case .toggleFeature(let feature):
             let enabled = renderState.features.contains(feature)
             accessibilityAnnouncementHandler("\(featureName(feature)) \(enabled ? "enabled" : "disabled").")
         }
-        setRendererState()
         onRenderStateChanged?(renderState)
         return consumed
     }
@@ -441,5 +489,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func toggleHUD(_ sender: Any?) {
         handleRenderAction(.toggleHUD)
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 }

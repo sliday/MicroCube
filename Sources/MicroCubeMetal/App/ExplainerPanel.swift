@@ -83,6 +83,10 @@ final class ExplainerActionButton: NSButton {
     }
 }
 
+final class ExplainerLinkField: NSTextField {
+    override var acceptsFirstResponder: Bool { true }
+}
+
 final class ExplainerPanel: NSVisualEffectView {
     static let disclosures = [
         "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO",
@@ -113,7 +117,6 @@ final class ExplainerPanel: NSVisualEffectView {
     private(set) var featureButtons = [NSButton]()
     private(set) var bodyTextFields = [NSTextField]()
     private(set) var disclosureLabels = [NSTextField]()
-    private(set) var passageDisclosureTexts = [[String]]()
     private(set) var sourceLinkFields = [NSTextField]()
     let closeButton: NSButton
 
@@ -202,24 +205,19 @@ final class ExplainerPanel: NSVisualEffectView {
             addDisclosure(Self.disclosures[1], to: contentStack)
         }
         for passage in passages {
-            var placedDisclosures = [Self.disclosures[0]]
             addDisclosure(Self.disclosures[0], to: contentStack)
             for paragraph in passage.components(separatedBy: "\n\n") {
                 addBody(paragraph, to: contentStack)
                 if paragraph.contains("one pass") || paragraph.contains("one frame") {
                     addDisclosure(Self.disclosures[2], to: contentStack)
-                    placedDisclosures.append(Self.disclosures[2])
                 }
                 if paragraph.contains("1,073,741,824 colored voxels") {
                     addDisclosure(Self.disclosures[1], to: contentStack)
-                    placedDisclosures.append(Self.disclosures[1])
                 }
                 if paragraph.contains("collisions and force directions") {
                     addDisclosure(Self.disclosures[3], to: contentStack)
-                    placedDisclosures.append(Self.disclosures[3])
                 }
             }
-            passageDisclosureTexts.append(placedDisclosures)
         }
 
         addHeading("CONCEPT FOR THIS MAC DEMO", to: contentStack)
@@ -278,7 +276,12 @@ final class ExplainerPanel: NSVisualEffectView {
         for (button, nextButton) in zip(featureButtons, featureButtons.dropFirst()) {
             button.nextKeyView = nextButton
         }
-        featureButtons.last?.nextKeyView = closeButton
+        featureButtons.last?.nextKeyView = sourceLinkFields.first
+        for (field, nextField) in zip(sourceLinkFields, sourceLinkFields.dropFirst()) {
+            field.nextKeyView = nextField
+        }
+        sourceLinkFields.last?.nextKeyView = closeButton
+        apply(renderState: RenderState())
         updateAppearance(increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)
     }
 
@@ -293,6 +296,31 @@ final class ExplainerPanel: NSVisualEffectView {
         button.setAccessibilityLabel("Open Why Rays explainer")
         button.toolTip = "Open Why Rays explainer"
         return button
+    }
+
+    func apply(renderState: RenderState) {
+        let evidenceTitles = ["1 FINAL", "2 GRID", "3 MIPS", "4 STEPS", "5 COST"]
+        for ((button, view), title) in zip(zip(evidenceButtons, EvidenceView.allCases), evidenceTitles) {
+            let selected = renderState.evidenceView == view
+            button.title = title
+            button.state = selected ? .on : .off
+            button.setAccessibilityValue(selected ? "Selected" : "Not selected")
+        }
+
+        let features: [(String, RenderFeatures)] = [
+            ("G", .gaussian),
+            ("K", .shadows),
+            ("L", .lights),
+            ("O", .optics),
+            ("X", .sdf),
+        ]
+        for (button, (key, feature)) in zip(featureButtons, features) {
+            let enabled = renderState.features.contains(feature)
+            let value = enabled ? "On" : "Off"
+            button.title = "\(key) \(value.uppercased())"
+            button.state = enabled ? .on : .off
+            button.setAccessibilityValue(value)
+        }
     }
 
     func updateAppearance(increasedContrast: Bool) {
@@ -352,11 +380,15 @@ final class ExplainerPanel: NSVisualEffectView {
             ]
         )
         attributed.addAttribute(.link, value: source.url, range: NSRange(location: 0, length: source.title.utf16.count))
-        let field = NSTextField(labelWithAttributedString: attributed)
+        let field = ExplainerLinkField(frame: .zero)
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.isEditable = false
         field.isSelectable = true
         field.allowsEditingTextAttributes = true
         field.maximumNumberOfLines = 0
         field.lineBreakMode = .byWordWrapping
+        field.attributedStringValue = attributed
         field.setAccessibilityLabel("\(source.title). \(source.availability)")
         return field
     }

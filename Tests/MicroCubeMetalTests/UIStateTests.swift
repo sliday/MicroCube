@@ -3,49 +3,23 @@ import XCTest
 @testable import MicroCubeMetal
 
 final class UIStateTests: XCTestCase {
-    func testPanelLayoutBreakpointAndHUDClearance() {
-        XCTAssertEqual(ExplainerLayout.state(windowWidth: 1099), .collapsed)
-        XCTAssertEqual(ExplainerLayout.state(windowWidth: 1100), .expanded(width: 424))
-        XCTAssertEqual(ExplainerLayout.hudClearance, 16)
-    }
-
-    func testCollapsedRailOpensPanelInsideSmallWindowAndEscapeReturnsToRail() {
-        XCTAssertEqual(
-            ExplainerLayout.presentation(windowWidth: 1099, explainerVisible: false),
-            .rail
-        )
-        XCTAssertEqual(
-            ExplainerLayout.presentation(windowWidth: 1099, explainerVisible: true),
-            .panel
-        )
-        XCTAssertEqual(
-            ExplainerLayout.presentation(windowWidth: 1100, explainerVisible: false),
-            .hidden
-        )
-    }
-
-    func testPanelProvidesFiveFocusableEvidenceControlsAndFocusChain() {
+    func testPanelTabLoopIncludesCloseEvidenceFeaturesAndNativeLinks() {
         let panel = ExplainerPanel(copy: "Quoted copy", actionHandler: { _ in })
+        let controls: [NSView] = [panel.closeButton]
+            + panel.evidenceButtons
+            + panel.featureButtons
+            + panel.sourceLinkFields
 
         XCTAssertEqual(panel.evidenceButtons.count, 5)
-        XCTAssertTrue(panel.evidenceButtons.allSatisfy(\.acceptsFirstResponder))
-        for (button, nextButton) in zip(panel.evidenceButtons, panel.evidenceButtons.dropFirst()) {
-            XCTAssertTrue(button.nextKeyView === nextButton)
+        XCTAssertEqual(panel.featureButtons.count, 5)
+        XCTAssertEqual(panel.sourceLinkFields.count, 3)
+        XCTAssertTrue(controls.allSatisfy(\.acceptsFirstResponder))
+        for (control, nextControl) in zip(controls, Array(controls.dropFirst()) + [panel.closeButton]) {
+            XCTAssertTrue(
+                control.nextKeyView === nextControl,
+                "Expected \(control) to advance to \(nextControl), got \(String(describing: control.nextKeyView))"
+            )
         }
-    }
-
-    func testCloseAndCollapsedRailUseAccessibleLabelsAndActions() {
-        var actions = [RenderAction]()
-        let panel = ExplainerPanel(copy: "Quoted copy", actionHandler: { actions.append($0) })
-        let rail = ExplainerPanel.makeCollapsedRail(actionHandler: { actions.append(.toggleExplainer) })
-
-        panel.closeButton.performClick(nil)
-        rail.performClick(nil)
-
-        XCTAssertEqual(panel.closeButton.accessibilityLabel(), "Close Why Rays explainer")
-        XCTAssertEqual(rail.accessibilityLabel(), "Open Why Rays explainer")
-        XCTAssertTrue(rail.acceptsFirstResponder)
-        XCTAssertEqual(actions, [.toggleExplainer, .toggleExplainer])
     }
 
     func testPanelUsesThirteenPointBodyTextAndRequiredDisclosures() {
@@ -63,23 +37,32 @@ final class UIStateTests: XCTestCase {
 
     func testQuotedPassagesCarryAdjacentSourceCurrentAndConceptDisclosures() throws {
         let panel = ExplainerPanel(copy: try ExplainerCopy.text(), actionHandler: { _ in })
+        let scrollView = try XCTUnwrap(panel.subviews.compactMap { $0 as? NSScrollView }.first)
+        let document = try XCTUnwrap(scrollView.documentView)
+        let stack = try XCTUnwrap(document.subviews.compactMap { $0 as? NSStackView }.first)
+        let fields = stack.arrangedSubviews.compactMap { $0 as? NSTextField }
+        let source = "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO"
+        let current = "CURRENT MAC APP · 1 HYBRID IMAGE KERNEL + 1 VOLUME LIGHT KERNEL"
+        let claim = "SOURCE CLAIM · NOT A RESULT FROM THIS MAC APP"
+        let concept = "CONCEPT IN THIS MAC DEMO · NO PHYSICS OR AUDIO SYSTEM RUNS HERE"
 
-        XCTAssertEqual(panel.passageDisclosureTexts, [
-            [
-                "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO",
-                "CURRENT MAC APP · 1 HYBRID IMAGE KERNEL + 1 VOLUME LIGHT KERNEL",
-            ],
-            [
-                "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO",
-                "CURRENT MAC APP · 1 HYBRID IMAGE KERNEL + 1 VOLUME LIGHT KERNEL",
-                "SOURCE CLAIM · NOT A RESULT FROM THIS MAC APP",
-            ],
-            [
-                "SOURCE QUOTE · ORIGINAL AUTHOR'S DEMO",
-                "CURRENT MAC APP · 1 HYBRID IMAGE KERNEL + 1 VOLUME LIGHT KERNEL",
-                "CONCEPT IN THIS MAC DEMO · NO PHYSICS OR AUDIO SYSTEM RUNS HERE",
-            ],
-        ])
+        func index(containing text: String) throws -> Int {
+            try XCTUnwrap(fields.firstIndex { $0.stringValue.contains(text) }, "Missing visible text: \(text)")
+        }
+
+        for passageStart in [
+            "Why do I use ray tracing",
+            "I set myself a condition",
+            "I managed to feel my way",
+        ] {
+            let passageIndex = try index(containing: passageStart)
+            XCTAssertEqual(fields[passageIndex - 1].stringValue, source)
+        }
+        XCTAssertEqual(fields[try index(containing: "exactly two technical advantages") + 1].stringValue, current)
+        XCTAssertEqual(fields[try index(containing: "renders voxels, SDFs, Gaussians") + 1].stringValue, current)
+        XCTAssertEqual(fields[try index(containing: "1,073,741,824 colored voxels") + 1].stringValue, claim)
+        XCTAssertEqual(fields[try index(containing: "all together in one frame") + 1].stringValue, current)
+        XCTAssertEqual(fields[try index(containing: "collisions and force directions") + 1].stringValue, concept)
     }
 
     func testPanelUsesNativeLinkFieldsWithSpecifiedTargets() throws {
@@ -103,22 +86,193 @@ final class UIStateTests: XCTestCase {
         }
     }
 
-    func testIncreasedContrastRaisesExplainerOverlayOpacity() {
-        XCTAssertGreaterThan(
-            ExplainerAppearance.overlayAlpha(increasedContrast: true),
-            ExplainerAppearance.overlayAlpha(increasedContrast: false)
-        )
+    func testPanelAppliesLiveEvidenceAndFeatureStateWithTextAndAccessibilityValues() {
+        let panel = ExplainerPanel(copy: "Quoted copy", actionHandler: { _ in })
+        var state = RenderState()
+        state.apply(.evidence(.steps))
+        state.apply(.toggleFeature(.gaussian))
+        state.apply(.toggleFeature(.lights))
+
+        panel.apply(renderState: state)
+
+        XCTAssertEqual(panel.evidenceButtons.map(\.title), ["1 FINAL", "2 GRID", "3 MIPS", "4 STEPS", "5 COST"])
+        XCTAssertEqual(panel.evidenceButtons.map(\.state), [.off, .off, .off, .on, .off])
+        XCTAssertEqual(panel.featureButtons.map(\.title), ["G OFF", "K ON", "L OFF", "O ON", "X ON"])
+        XCTAssertEqual(panel.featureButtons.map(\.state), [.off, .on, .off, .on, .on])
+        XCTAssertEqual(panel.featureButtons.map { $0.accessibilityValue() as? String }, ["Off", "On", "Off", "On", "On"])
+
+        panel.apply(renderState: RenderState())
+
+        XCTAssertEqual(panel.evidenceButtons.map(\.state), [.on, .off, .off, .off, .off])
+        XCTAssertEqual(panel.featureButtons.map(\.title), ["G ON", "K ON", "L ON", "O ON", "X ON"])
     }
 
-    func testReduceMotionFreezesSceneStateWithoutChangingCameraInputState() {
-        var state = RenderState()
-        state.apply(.evidence(.grid))
+    func testProductionCompactLayoutOpensPanelAndReturnsFocusToRailOnCloseAndEscape() throws {
+        let delegate = AppDelegate()
+        delegate.configureWindow()
+        let window = try XCTUnwrap(delegate.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 1099, height: 700))
+        window.contentView?.layoutSubtreeIfNeeded()
+        delegate.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let panel = try XCTUnwrap(delegate.explainerPanel)
+        let rail = try XCTUnwrap(delegate.explainerRail)
+        let metalView = try XCTUnwrap(delegate.metalView)
+        let hud = try XCTUnwrap(delegate.hudOverlay)
 
-        let effective = effectiveRenderState(state, reduceMotion: true)
+        XCTAssertTrue(panel.isHidden)
+        XCTAssertFalse(rail.isHidden)
+        XCTAssertEqual(rail.accessibilityLabel(), "Open Why Rays explainer")
+        XCTAssertTrue(metalView.nextKeyView === rail)
+        XCTAssertTrue(rail.nextKeyView === metalView)
 
-        XCTAssertTrue(effective.paused)
-        XCTAssertEqual(effective.evidenceView, .grid)
-        XCTAssertEqual(effective.features, state.features)
+        rail.performClick(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(delegate.renderState.explainerVisible)
+        XCTAssertFalse(panel.isHidden)
+        XCTAssertTrue(rail.isHidden)
+        XCTAssertEqual(panel.frame.width, 424, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxX, window.contentView?.bounds.maxX ?? 0, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(panel.frame.minX - hud.frame.maxX, 16 - 0.5)
+        XCTAssertTrue(window.firstResponder === panel.closeButton)
+
+        panel.closeButton.performClick(nil)
+
+        XCTAssertFalse(delegate.renderState.explainerVisible)
+        XCTAssertTrue(panel.isHidden)
+        XCTAssertFalse(rail.isHidden)
+        XCTAssertTrue(window.firstResponder === rail)
+
+        rail.performClick(nil)
+        delegate.handleRenderAction(.escape)
+
+        XCTAssertFalse(delegate.renderState.explainerVisible)
+        XCTAssertTrue(window.firstResponder === rail)
+
+        window.makeFirstResponder(metalView)
+        XCTAssertFalse(delegate.handleRenderAction(.escape))
+        XCTAssertTrue(window.firstResponder === metalView)
+    }
+
+    func testProductionExpandedLayoutReturnsFocusToMTKViewOnCloseAndEscape() throws {
+        let delegate = AppDelegate()
+        delegate.configureWindow()
+        let window = try XCTUnwrap(delegate.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 1100, height: 700))
+        window.contentView?.layoutSubtreeIfNeeded()
+        delegate.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        let panel = try XCTUnwrap(delegate.explainerPanel)
+        let rail = try XCTUnwrap(delegate.explainerRail)
+        let metalView = try XCTUnwrap(delegate.metalView)
+        let hud = try XCTUnwrap(delegate.hudOverlay)
+
+        delegate.handleRenderAction(.toggleExplainer)
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertFalse(panel.isHidden)
+        XCTAssertTrue(rail.isHidden)
+        XCTAssertEqual(panel.frame.width, 424, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxX, window.contentView?.bounds.maxX ?? 0, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(panel.frame.minX - hud.frame.maxX, 16 - 0.5)
+
+        panel.closeButton.performClick(nil)
+
+        XCTAssertFalse(delegate.renderState.explainerVisible)
+        XCTAssertTrue(panel.isHidden)
+        XCTAssertTrue(rail.isHidden)
+        XCTAssertTrue(window.firstResponder === metalView)
+
+        delegate.handleRenderAction(.toggleExplainer)
+        delegate.handleRenderAction(.escape)
+
+        XCTAssertTrue(window.firstResponder === metalView)
+    }
+
+    func testProductionActionsKeepOpenPanelControlsInSyncWithRenderState() throws {
+        let delegate = AppDelegate()
+        delegate.configureWindow()
+        let window = try XCTUnwrap(delegate.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 1099, height: 700))
+        delegate.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        let panel = try XCTUnwrap(delegate.explainerPanel)
+        let rail = try XCTUnwrap(delegate.explainerRail)
+
+        delegate.handleRenderAction(.evidence(.pyramid))
+        delegate.handleRenderAction(.toggleFeature(.gaussian))
+        rail.performClick(nil)
+
+        XCTAssertEqual(panel.evidenceButtons.map(\.state), [.off, .off, .on, .off, .off])
+        XCTAssertEqual(panel.featureButtons.first?.title, "G OFF")
+
+        delegate.handleRenderAction(.evidence(.cost))
+        delegate.handleRenderAction(.toggleFeature(.shadows))
+
+        XCTAssertEqual(panel.evidenceButtons.map(\.state), [.off, .off, .off, .off, .on])
+        XCTAssertEqual(panel.featureButtons.map(\.title), ["G OFF", "K OFF", "L ON", "O ON", "X ON"])
+    }
+
+    func testAccessibilityDisplayNotificationUpdatesPanelAndEffectiveRendererWhileMovementInputStaysActive() throws {
+        var options = AccessibilityDisplayOptions(increasedContrast: false, reduceMotion: false)
+        let delegate = AppDelegate(accessibilityDisplayOptionsProvider: { options })
+        delegate.configureWindow()
+        let window = try XCTUnwrap(delegate.window)
+        defer { window.close() }
+        let panel = try XCTUnwrap(delegate.explainerPanel)
+        let renderer = try XCTUnwrap(delegate.renderer)
+        let metalView = try XCTUnwrap(delegate.metalView)
+        let normalAlpha = panel.alphaValue
+
+        options = AccessibilityDisplayOptions(increasedContrast: true, reduceMotion: true)
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
+
+        XCTAssertGreaterThan(panel.alphaValue, normalAlpha)
+        XCTAssertTrue(renderer.currentRenderState().paused)
+        let keyDown = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "w",
+            charactersIgnoringModifiers: "w",
+            isARepeat: false,
+            keyCode: 13
+        ))
+        metalView.keyDown(with: keyDown)
+        XCTAssertTrue(metalView.input.snapshot().keys.contains(13))
+    }
+
+    func testReduceMotionPauseToggleDoesNotAnnounceResumeWhileEffectiveStateStaysPaused() {
+        let options = AccessibilityDisplayOptions(increasedContrast: false, reduceMotion: true)
+        var announcements = [String]()
+        let delegate = AppDelegate(
+            accessibilityDisplayOptionsProvider: { options },
+            accessibilityAnnouncementPoster: { announcements.append($0) }
+        )
+
+        delegate.handleRenderAction(.togglePause)
+        delegate.handleRenderAction(.togglePause)
+
+        XCTAssertFalse(delegate.renderState.paused)
+        XCTAssertEqual(announcements.last, "Scene motion remains held by Reduce Motion. Camera remains active.")
+        XCTAssertFalse(announcements.contains("Scene motion resumed."))
+    }
+
+    func testDefaultAnnouncementHandlerUsesInjectedAccessibilityPoster() {
+        var posted = [String]()
+        let delegate = AppDelegate(accessibilityAnnouncementPoster: { posted.append($0) })
+
+        delegate.handleRenderAction(.evidence(.grid))
+
+        XCTAssertEqual(posted, ["Evidence view changed to GRID."])
     }
 
     func testEvidenceKeysOnlyChangeEvidenceView() {

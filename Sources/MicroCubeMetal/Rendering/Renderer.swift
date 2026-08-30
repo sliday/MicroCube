@@ -488,7 +488,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         return commandBuffer.status == .completed
     }
 
-    private func currentRenderState() -> RenderState {
+    func currentRenderState() -> RenderState {
         stateLock.lock()
         let state = renderState
         stateLock.unlock()
