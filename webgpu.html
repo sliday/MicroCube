@@ -1,0 +1,1047 @@
+<html>
+<head>
+<meta charset="utf-8">
+<title>MicroCube @vseplet</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0c10; color: #dfe6f2; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #cv { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; cursor: crosshair; }
+  #hud { position: fixed; left: 8px; top: 6px; font: 12px/1.4 monospace; white-space: pre; text-shadow: 0 0 3px #000, 0 0 3px #000; pointer-events: none; }
+  #aim { position: fixed; left: 50%; top: 50%; width: 9px; height: 9px; margin: -5px 0 0 -5px; pointer-events: none;
+         border: 1px solid rgba(255,255,255,.85); border-radius: 50%; mix-blend-mode: difference; }
+  #panel { position: fixed; right: 8px; top: 8px; width: 270px; }
+  body.clean #panel, body.clean #hud { display: none; }
+  #load { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px;
+          align-items: center; justify-content: center; background: #0a0c10; font: 12px/1.4 monospace; }
+  #load.done { display: none; }
+  #bar { width: 260px; height: 3px; background: #1e2430; }
+  #bar > i { display: block; height: 100%; width: 0; background: #7fa8d8; transition: width .15s linear; }
+</style>
+</head>
+<div>
+<canvas id="cv"></canvas><div id="hud"></div><div id="aim"></div><div id="panel"></div>
+<div id="load"><span id="loadText">starting…</span><div id="bar"><i></i></div></div>
+<script type="module">
+import { Pane } from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
+
+// ─────────────────────────── SETTINGS ───────────────────────────
+const SCALE = 10;
+const M = (metres) => metres * SCALE;
+
+const N = 1024;                  // сторона мира по горизонтали
+const NY = 256;                  // высота: мир плоский, вверх столько вокселей не нужно
+const CELL = 8;
+const CHUNK = 32;
+const BLOCK = 1;
+const GROUND = M(9);             // средний уровень земли; вместе с HILLS должен влезать в NY
+const HILLS = M(4);
+const ISLE_Y = M(17);
+const ISLE_SIZE = M(6);
+const ISLE_AMOUNT = 0.7;
+const LOAD_BUDGET_MS = 3;
+const SEED = 7;
+
+const MOVE_SPEED = M(4.5);
+const RUN_MULT = 1.9;
+const JUMP_V = M(9.9);
+const GRAVITY = M(26);
+const EYE = M(1.62);
+const PLAYER_R = M(0.32);
+const STEP_H = Math.round(M(0.6));   // на какой уступ игрок взбирается сам, в вокселях
+const MOUSE_SENS = 0.0022;
+const REACH = M(45);
+
+const SUN = [0.42, 0.82, 0.38];
+const SUN_COLOR = [255, 246, 214];
+const SUN_COS = 0.9985;          // радиус диска: чем ближе к единице, тем мельче
+const SUN_GLOW = 0.96;           // где начинается ореол вокруг него
+const FOG = { color: { r: 150, g: 170, b: 195 } };   // объектом — панель правит его пипеткой
+const SKY_TOP = [92, 132, 196];
+const SKY_HOR = [186, 206, 226];
+
+let DIG_R = 12;                  // радиус шара, которым выгрызаем и лепим, в вокселях
+let DOF_START = 0.21;            // доля дальности, где начинается размытие
+let DOF_END = 1.0;               // и где оно достигает предела
+let DOF_R = 5;                   // предельный радиус размытия в пикселях
+let RES_H = 280;
+let FOV_DEG = 70;
+let MAX_DIST = N / 2;
+let FOG_START = 0.49;
+let FOG_END = 0.8;
+let AMBIENT = 0.42;
+let SHADOW = true;
+let SHADOW_DIST = 84;
+let SHADOW_DARK = 0.5;
+let SHADOW_LOD = 0;
+let AO = true;
+let AO_STRENGTH = 0.6;
+
+// ─────────────────────────── WORLD ───────────────────────────
+const LMAX = Math.log2(Math.min(N, NY)) | 0;   // выше самой низкой стороны узлы не растут
+const CL = Math.log2(CELL) | 0, CM = CELL - 1, CELL3 = CELL ** 3;
+const NC = N / CELL, NCY = NY / CELL;          // клеток по горизонтали и по высоте
+// Пирамида начинается там, где кончается клетка: узел размером с клетку — это и есть клетка,
+// занята она или нет видно по её индексу. Поэтому уровни ниже CL не существуют вовсе,
+// а верхние весят копейки: для куба 1024 это 300 КБ вместо 146 МБ.
+const lv = Array.from({ length: LMAX + 1 }, (_, L) => (L > CL ? new Uint8Array((N >> L) * (NY >> L) * (N >> L)) : null));
+let wox = -(N >> 1), woz = -(N >> 1);
+
+const pyrBytes = lv.reduce((s, a) => s + (a ? a.byteLength : 0), 0);
+const cellB = new Int32Array(NC * NCY * NC).fill(-1);
+let blocks = new Uint8Array(CELL3 * 64);
+let blockCount = 0;
+const freeB = [];
+
+const cellAt = (x, y, z) => ((z >> CL) * NCY + (y >> CL)) * NC + (x >> CL);
+const inCell = (x, y, z) => ((z & CM) * CELL + (y & CM)) * CELL + (x & CM);
+const inBox = (x, y, z) => (x | y | z) >= 0 && x < N && y < NY && z < N;
+
+// что изменилось с прошлого кадра и должно уехать на GPU
+const dirtyBlocks = new Set();
+let dirtyCells = true, dirtyPyr = true;
+
+// Клетка бывает трёх видов: индекс блока (b >= 0), пустая (-1) или однородная —
+// вся из одного материала, тогда в индексе лежит -(тип + 2) и блок ей не нужен.
+// Так и небо, и сплошная толща под поверхностью стоят четыре байта на клетку:
+// память уходит только на границу, а не на объём.
+const uniType = (b) => -b - 2;
+const uniCode = (t) => -t - 2;
+
+const blockCell = new Int32Array(65536).fill(-1);   // блок → его клетка, для схлопывания
+
+const allocCell = (c, fill) => {
+  dirtyCells = true;
+  const b = freeB.length ? freeB.pop() : blockCount++;
+  if((b + 1) * CELL3 > blocks.length) {
+    const grown = new Uint8Array(blocks.length * 2);
+    grown.set(blocks);
+    blocks = grown;
+  }
+  blocks.fill(fill, b * CELL3, (b + 1) * CELL3);
+  if(b < blockCell.length) blockCell[b] = c;
+  dirtyBlocks.add(b);
+  return cellB[c] = b;
+};
+
+const voxAt = (x, y, z) => {
+  const b = cellB[cellAt(x, y, z)];
+  if(b >= 0) return blocks[b * CELL3 + inCell(x, y, z)];
+  return b === -1 ? 0 : uniType(b);
+};
+const voxSet = (x, y, z, t) => {
+  const c = cellAt(x, y, z);
+  let b = cellB[c];
+  if(b < 0) {
+    const was = b === -1 ? 0 : uniType(b);
+    if(was === t) return;
+    b = allocCell(c, was);            // однородную клетку разворачиваем в блок
+  }
+  blocks[b * CELL3 + inCell(x, y, z)] = t;
+  dirtyBlocks.add(b);
+};
+
+// Блок, у которого все воксели одинаковы, схлопывается обратно в однородную клетку
+const compact = () => {
+  for(const b of dirtyBlocks) {
+    const c = b < blockCell.length ? blockCell[b] : -1;
+    if(c < 0 || cellB[c] !== b) continue;
+    const o = b * CELL3, v = blocks[o];
+    let same = true;
+    for(let i = 1; i < CELL3; i++) if(blocks[o + i] !== v) { same = false; break; }
+    if(!same) continue;
+    cellB[c] = v === 0 ? -1 : uniCode(v);
+    blockCell[b] = -1;
+    freeB.push(b);
+    dirtyBlocks.delete(b);
+    dirtyCells = true;
+  }
+};
+const getVox = (x, y, z) => inBox(x, y, z) ? voxAt(x, y, z) : 0;
+
+const reduceBox = (x0, y0, z0, x1, y1, z1) => {
+  dirtyPyr = true;
+  x0 = Math.max(0, x0); y0 = Math.max(0, y0); z0 = Math.max(0, z0);
+  x1 = Math.min(N - 1, x1); y1 = Math.min(NY - 1, y1); z1 = Math.min(N - 1, z1);
+  for(let L = CL + 1; L <= LMAX; L++) {
+    const nx = N >> L, ny = NY >> L;                  // размеры сетки этого уровня
+    const cx = N >> (L - 1), cyy = NY >> (L - 1);     // и предыдущего, где лежат дети
+    const d = lv[L - 1];
+    const sy = cx, sz = cx * cyy;                     // шаги индекса по y и по z у детей
+    for(let z = z0 >> L; z <= z1 >> L; z++) for(let y = y0 >> L; y <= y1 >> L; y++) for(let x = x0 >> L; x <= x1 >> L; x++) {
+      const c = (2 * z * cyy + 2 * y) * cx + 2 * x;
+      // на первом уровне дети — сами клетки: занята та, у которой индекс не «пусто»
+      const any = d === null
+        ? (cellB[c] !== -1 || cellB[c + 1] !== -1 || cellB[c + sy] !== -1 || cellB[c + sy + 1] !== -1
+          || cellB[c + sz] !== -1 || cellB[c + sz + 1] !== -1 || cellB[c + sz + sy] !== -1 || cellB[c + sz + sy + 1] !== -1)
+        : (d[c] || d[c + 1] || d[c + sy] || d[c + sy + 1] || d[c + sz] || d[c + sz + 1] || d[c + sz + sy] || d[c + sz + sy + 1]);
+      lv[L][(z * ny + y) * nx + x] = any ? 1 : 0;
+    }
+  }
+};
+
+const sphereEdit = (cx, cy, cz, r, t) => {
+  const R = Math.ceil(r) + 1;
+  const x0 = Math.round(cx), y0 = Math.round(cy), z0 = Math.round(cz);
+  const r2 = r * r;
+  for(let dz = -R; dz <= R; dz++) for(let dy = -R; dy <= R; dy++) for(let dx = -R; dx <= R; dx++) {
+    if(dx * dx + dy * dy + dz * dz > r2) continue;
+    const x = x0 + dx, y = y0 + dy, z = z0 + dz;
+    if(!inBox(x, y, z)) continue;
+    const v = voxAt(x, y, z);
+    if(t === 0 ? v === 0 : v !== 0) continue;
+    voxSet(x, y, z, t);
+  }
+  reduceBox(x0 - R, y0 - R, z0 - R, x0 + R, y0 + R, z0 + R);
+};
+
+// ─────────────────────────── TERRAIN ───────────────────────────
+const hash2 = (x, z, s) => {
+  let h = Math.imul(x | 0, 374761393) + Math.imul(z | 0, 668265263) + Math.imul(s | 0, 1274126177);
+  h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+};
+const vnoise = (x, z, s) => {
+  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx), uz = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz, s), b = hash2(ix + 1, iz, s), c = hash2(ix, iz + 1, s), d = hash2(ix + 1, iz + 1, s);
+  return (a + (b - a) * ux) * (1 - uz) + (c + (d - c) * ux) * uz;
+};
+
+const noise3 = (x, y, z, s) => {
+  const iy = Math.floor(y), f = y - iy, u = f * f * (3 - 2 * f);
+  return vnoise(x, z, s + iy * 37) * (1 - u) + vnoise(x, z, s + (iy + 1) * 37) * u;
+};
+
+// Тон, насыщенность, яркость → цвет; тон по всему кругу, а не по трём секторам
+const hsv = (h, s, v) => [5, 3, 1].map((n) => {
+  const k = (n + h * 6) % 6;
+  return Math.round((v - v * s * Math.max(0, Math.min(k, 4 - k, 1))) * 255);
+});
+
+// Палитра: от густой сине-фиолетовой глубины через винный и ржавый к выгоревшему песку.
+const MATS = 14, SHADES = 3;
+const PAL = [[0, 0, 0]];
+for(let m = 0; m < MATS; m++) {
+  const u = m / (MATS - 1);
+  const hue = (0.70 + u * 0.38) % 1, sat = 0.52 - 0.34 * u, val = 0.26 + 0.58 * u;
+  for(let s = 0; s < SHADES; s++) PAL.push(hsv(hue, sat, val * (0.86 + s * 0.14)));
+}
+const base = (m) => 1 + m * SHADES;
+const pick = (m, x, y, z) => base(m) + ((hash2(x * 7 + y, z * 13 + y, 5) * SHADES) | 0);
+
+const heightAt = (wx, wz) => {
+  const n = vnoise(wx / (12 * SCALE), wz / (12 * SCALE), SEED) * 0.55
+    + vnoise(wx / (5 * SCALE), wz / (5 * SCALE), SEED + 1) * 0.3
+    + vnoise(wx / (2 * SCALE), wz / (2 * SCALE), SEED + 2) * 0.15;
+  const ridge = 1 - Math.abs(vnoise(wx / (22 * SCALE), wz / (22 * SCALE), SEED + 3) * 2 - 1);
+  return Math.round(GROUND + (n - 0.5) * HILLS * 2 + ridge * ridge * HILLS * 0.8);
+};
+const blockTop = (wx, wz) => Math.round(heightAt(wx, wz) / BLOCK) * BLOCK;
+
+const isleAt = (wx, y, wz) => Math.abs(y - ISLE_Y) > ISLE_SIZE * 1.4 ? 0
+  : noise3(wx / ISLE_SIZE, y / (ISLE_SIZE * 0.6), wz / ISLE_SIZE, 53) - Math.abs(y - ISLE_Y) / (ISLE_SIZE * 1.4);
+
+const genColumn = (x, z) => {
+  const wx = wox + x, wz = woz + z;
+  const h = blockTop(wx, wz);
+  const bx = Math.floor(wx / BLOCK), bz = Math.floor(wz / BLOCK);
+  let isle = 0, isleTop = false, cy = -1, b = -1;
+  for(let y = 0; y < NY; y++) {
+    let t = 0;
+    if((y >> CL) !== cy) { cy = y >> CL; b = cellB[cellAt(x, y, z)]; }
+    if(y >= h && y % BLOCK === 0) {
+      isle = isleAt(wx, y, wz);
+      isleTop = isle > ISLE_AMOUNT && isleAt(wx, y + BLOCK, wz) <= ISLE_AMOUNT;
+    }
+    const solid = y < h || isle > ISLE_AMOUNT;
+    if(solid) {
+      const depthBlocks = y < h ? Math.floor((h - 1 - y) / BLOCK) : (isleTop ? 0 : 2);
+      const by = Math.floor(y / BLOCK);
+      const lvl = (h - GROUND + HILLS) / (2 * HILLS) + (vnoise(wx / (6 * SCALE), wz / (6 * SCALE), 31) - 0.5) * 0.28;
+      const band = vnoise(wx / (40 * SCALE), wz / (40 * SCALE), 21) * 6 + y / (2.5 * SCALE);
+      // Глубокая порода берётся на клетку целиком, одним оттенком: тогда внутренние клетки
+      // однородны и не тратят ни байта. Зерно и переходы остаются только у поверхности.
+      const deep = y < h - BLOCK * 3;
+      const deepBand = vnoise((wx >> CL) / 3, (wz >> CL) / 3, 21) * 6 + (y >> CL);
+      const m = depthBlocks === 0 ? Math.max(0, Math.min(MATS - 1, (lvl * MATS) | 0))
+        : depthBlocks === 1 ? Math.max(0, Math.min(MATS - 1, (lvl * MATS) | 0) - 1)
+        : ((Math.floor(deep ? deepBand : band) % MATS) + MATS) % MATS;
+      if(deep) t = base(m) + 1;
+      else {
+        t = pick(m, bx, by, bz);
+        if(hash2(wx * 3, wz * 5, y) > 0.82) t = base(m) + (t - base(m) + 1) % SHADES;
+      }
+    }
+    if(b < 0) {
+      const was = b === -1 ? 0 : uniType(b);
+      if(was === t) continue;                       // клетка уже вся такая — писать нечего
+      b = allocCell(cellAt(x, y, z), was);
+    }
+    blocks[b * CELL3 + inCell(x, y, z)] = t;
+    dirtyBlocks.add(b);
+  }
+};
+const pending = [];
+const shiftWorld = (dx, dz) => {
+  const s = dx ? Math.sign(dx) : Math.sign(dz);
+  const axis = dx ? 0 : 2;
+
+  // сетка nx × ny × nx едет по нужной оси; по x — построчно, по z — целыми плоскостями
+  const moveGrid = (arr, nx, ny, step, blank = 0) => {
+    if(axis === 0) {
+      for(let i = 0; i < ny * nx; i++) {
+        const row = i * nx;
+        if(s > 0) { arr.copyWithin(row, row + step, row + nx); arr.fill(blank, row + nx - step, row + nx); }
+        else { arr.copyWithin(row + step, row, row + nx - step); arr.fill(blank, row, row + step); }
+      }
+    } else {
+      const plane = nx * ny, total = plane * nx;
+      if(s > 0) { arr.copyWithin(0, step * plane, total); arr.fill(blank, total - step * plane, total); }
+      else { arr.copyWithin(step * plane, 0, total - step * plane); arr.fill(blank, 0, step * plane); }
+    }
+  };
+
+  const stepC = CHUNK / CELL;
+  for(let z = 0; z < NC; z++) for(let y = 0; y < NCY; y++) for(let x = 0; x < NC; x++) {
+    const gone = axis === 0 ? (s > 0 ? x < stepC : x >= NC - stepC) : (s > 0 ? z < stepC : z >= NC - stepC);
+    const c = (z * NCY + y) * NC + x;
+    if(gone && cellB[c] >= 0) { freeB.push(cellB[c]); cellB[c] = -1; }
+  }
+  moveGrid(cellB, NC, NCY, stepC, -1);
+  dirtyCells = true; dirtyPyr = true;
+  let topRebuild = CL + 1;
+  for(let L = CL + 1; L <= LMAX; L++) {
+    const step = CHUNK >> L;
+    if(step < 1 || (step << L) !== CHUNK) { topRebuild = L; break; }
+    moveGrid(lv[L], N >> L, NY >> L, step);
+    topRebuild = L + 1;
+  }
+  // уровни, шаг которых не делится на размер узла, пересобираем — их немного
+  for(let L = topRebuild; L <= LMAX; L++) {
+    const nx = N >> L, ny = NY >> L, cx = N >> (L - 1), cyy = NY >> (L - 1);
+    const d = lv[L - 1], sy = cx, sz = cx * cyy;
+    for(let z = 0; z < nx; z++) for(let y = 0; y < ny; y++) for(let x = 0; x < nx; x++) {
+      const c = (2 * z * cyy + 2 * y) * cx + 2 * x;
+      const any = d === null
+        ? (cellB[c] !== -1 || cellB[c + 1] !== -1 || cellB[c + sy] !== -1 || cellB[c + sy + 1] !== -1
+          || cellB[c + sz] !== -1 || cellB[c + sz + 1] !== -1 || cellB[c + sz + sy] !== -1 || cellB[c + sz + sy + 1] !== -1)
+        : (d[c] || d[c + 1] || d[c + sy] || d[c + sy + 1] || d[c + sz] || d[c + sz + 1] || d[c + sz + sy] || d[c + sz + sy + 1]);
+      lv[L][(z * ny + y) * nx + x] = any ? 1 : 0;
+    }
+  }
+
+  if(axis === 0) wox += s * CHUNK; else woz += s * CHUNK;
+
+  for(let i = pending.length - 1; i >= 0; i--) {
+    const j = pending[i];
+    if(axis === 0) { j.x0 -= s * CHUNK; j.x1 -= s * CHUNK; j.x -= s * CHUNK; } else { j.z0 -= s * CHUNK; j.z1 -= s * CHUNK; j.z -= s * CHUNK; }
+    if(j.x1 <= 0 || j.z1 <= 0 || j.x0 >= N || j.z0 >= N) { pending.splice(i, 1); continue; }
+    const cx0 = Math.max(0, j.x0), cz0 = Math.max(0, j.z0);
+    if(cx0 !== j.x0 || cz0 !== j.z0 || j.x1 > N || j.z1 > N) {
+      j.x0 = cx0; j.z0 = cz0; j.x1 = Math.min(N, j.x1); j.z1 = Math.min(N, j.z1);
+      j.x = j.x0; j.z = j.z0;
+    } else if(j.x < j.x0 || j.z < j.z0) { j.x = j.x0; j.z = j.z0; }
+  }
+
+  const from = s > 0 ? N - CHUNK : 0;
+  const job = axis === 0
+    ? { x0: from, z0: 0, x1: from + CHUNK, z1: N }
+    : { x0: 0, z0: from, x1: N, z1: from + CHUNK };
+  job.x = job.x0; job.z = job.z0;
+  pending.push(job);
+};
+const pumpPending = (budgetMs) => {
+  if(!pending.length) return;
+  if(pending.length > 1) budgetMs *= pending.length;
+  const t0 = performance.now();
+  while(pending.length && performance.now() - t0 < budgetMs) {
+    const job = pending[0];
+    const z0 = job.z;
+    let count = 0;
+    while(job.z < job.z1 && count < 256) {
+      genColumn(job.x, job.z);
+      count++;
+      if(++job.x >= job.x1) { job.x = job.x0; job.z++; }
+    }
+    reduceBox(job.x0, 0, z0, job.x1, NY - 1, Math.min(job.z1, job.z + 1));
+    if(job.z >= job.z1) pending.shift();
+  }
+};
+
+// ─────────────────────────── RAYCAST ───────────────────────────
+const st = { t: 0, axis: 0, vx: 0, vy: 0, vz: 0, type: 0, nx: 0, ny: 0, nz: 0, clipT0: 0, clipT1: 0 };
+const EPS = 1e-5;
+
+const exitFast = (ox, oy, oz, idx1, idy1, idz1, size, ix, iy, iz) => {
+  const bx = ix * size, by = iy * size, bz = iz * size;
+  let tx = Infinity, ty = Infinity, tz = Infinity;
+  if(idx1 > 0) tx = (bx + size - ox) * idx1; else if(idx1 < 0) tx = (bx - ox) * idx1;
+  if(idy1 > 0) ty = (by + size - oy) * idy1; else if(idy1 < 0) ty = (by - oy) * idy1;
+  if(idz1 > 0) tz = (bz + size - oz) * idz1; else if(idz1 < 0) tz = (bz - oz) * idz1;
+  let t = tx, axis = 0;
+  if(ty < t) { t = ty; axis = 1; }
+  if(tz < t) { t = tz; axis = 2; }
+  st.axis = axis;
+  return t;
+};
+
+const snapHit = (ox, oy, oz, idx1, idy1, idz1, t0) => {
+  let ix = st.vx, iy = st.vy, iz = st.vz;
+  for(let k = 0; k < 4; k++) {
+    let tb = -Infinity, axis = 0;
+    if(idx1 !== 0) tb = ((idx1 > 0 ? ix : ix + 1) - ox) * idx1;
+    if(idy1 !== 0) { const ty = ((idy1 > 0 ? iy : iy + 1) - oy) * idy1; if(ty > tb) { tb = ty; axis = 1; } }
+    if(idz1 !== 0) { const tz = ((idz1 > 0 ? iz : iz + 1) - oz) * idz1; if(tz > tb) { tb = tz; axis = 2; } }
+    st.axis = axis;
+    if(tb <= t0 + 1e-9) { st.t = t0; break; }
+    st.t = tb;
+    const nx = ix - (axis === 0 ? (idx1 > 0 ? 1 : -1) : 0);
+    const ny = iy - (axis === 1 ? (idy1 > 0 ? 1 : -1) : 0);
+    const nz = iz - (axis === 2 ? (idz1 > 0 ? 1 : -1) : 0);
+    if(!inBox(nx, ny, nz)) break;
+    if(voxAt(nx, ny, nz) === 0) break;
+    ix = nx; iy = ny; iz = nz;
+  }
+  st.vx = ix; st.vy = iy; st.vz = iz;
+};
+
+const clipBox = (ox, oy, oz, dx, dy, dz) => {
+  let t0 = 0, t1 = 1e9, a, b, q;
+  if(Math.abs(dx) < 1e-12) { if(ox < 0 || ox > N) return false; }
+  else { a = -ox / dx; b = (N - ox) / dx; if(a > b) { q = a; a = b; b = q; } if(a > t0) t0 = a; if(b < t1) t1 = b; }
+  if(Math.abs(dy) < 1e-12) { if(oy < 0 || oy > NY) return false; }
+  else { a = -oy / dy; b = (NY - oy) / dy; if(a > b) { q = a; a = b; b = q; } if(a > t0) t0 = a; if(b < t1) t1 = b; }
+  if(Math.abs(dz) < 1e-12) { if(oz < 0 || oz > N) return false; }
+  else { a = -oz / dz; b = (N - oz) / dz; if(a > b) { q = a; a = b; b = q; } if(a > t0) t0 = a; if(b < t1) t1 = b; }
+  if(t1 <= t0) return false;
+  st.clipT0 = t0 < 0 ? 0 : t0; st.clipT1 = t1;
+  return true;
+};
+
+const trace = (ox, oy, oz, dx, dy, dz, tMax, stopL = 0) => {
+  st.t = 0; st.type = 0;
+  if(!clipBox(ox, oy, oz, dx, dy, dz)) return false;
+  let t = st.clipT0;
+  let t1 = st.clipT1;
+  if(tMax < t1) t1 = tMax;
+  const idx1 = dx !== 0 ? 1 / dx : 0, idy1 = dy !== 0 ? 1 / dy : 0, idz1 = dz !== 0 ? 1 / dz : 0;
+  let L = LMAX;
+  for(let guard = 0; guard < 20000 && t < t1; guard++) {
+    const px = ox + dx * (t + EPS), py = oy + dy * (t + EPS), pz = oz + dz * (t + EPS);
+    if(px < 0 || py < 0 || pz < 0 || px >= N || py >= NY || pz >= N) break;
+    const ix = px | 0, iy = py | 0, iz = pz | 0;
+    let v = 0;
+    for(;;) {
+      if(L === 0) { v = voxAt(ix, iy, iz); break; }
+      // узел размером с клетку — это сама клетка: пусто или нет видно по её индексу
+      v = L === CL ? (cellB[cellAt(ix, iy, iz)] !== -1 ? 1 : 0)
+        : lv[L][((iz >> L) * (NY >> L) + (iy >> L)) * (N >> L) + (ix >> L)];
+      if(v === 0 || L === stopL) break;
+      L = L === CL ? 0 : L - 1;
+    }
+    if(v === 0) {
+      t = Math.max(exitFast(ox, oy, oz, idx1, idy1, idz1, 1 << L, ix >> L, iy >> L, iz >> L), t) + EPS;
+      L = L === 0 ? CL : Math.min(LMAX, L + 1);
+      continue;
+    }
+    if(stopL > 0) { st.t = t; return true; }        // грубый луч: нужен только сам факт помехи
+    st.t = t; st.vx = ix; st.vy = iy; st.vz = iz;
+    snapHit(ox, oy, oz, idx1, idy1, idz1, st.clipT0);
+    st.type = voxAt(st.vx, st.vy, st.vz);
+    const a = st.axis;
+    st.nx = a === 0 ? (dx > 0 ? -1 : 1) : 0;
+    st.ny = a === 1 ? (dy > 0 ? -1 : 1) : 0;
+    st.nz = a === 2 ? (dz > 0 ? -1 : 1) : 0;
+    return true;
+  }
+  return false;
+};
+
+// ─────────────────────────── PLAYER ───────────────────────────
+const P = { x: N / 2 + 0.5, y: NY - 2, z: N / 2 + 0.5, vy: 0, yaw: 0.6, pitch: -0.15, onGround: false, mat: 5 };
+
+const collides = (x, y, z) => {
+  const h = EYE + 0.18;
+  for(let dy = 0; dy <= h; dy += 0.45) {
+    const yy = y + Math.min(dy, h);
+    if(getVox(Math.floor(x - PLAYER_R), Math.floor(yy), Math.floor(z - PLAYER_R))) return true;
+    if(getVox(Math.floor(x + PLAYER_R), Math.floor(yy), Math.floor(z - PLAYER_R))) return true;
+    if(getVox(Math.floor(x - PLAYER_R), Math.floor(yy), Math.floor(z + PLAYER_R))) return true;
+    if(getVox(Math.floor(x + PLAYER_R), Math.floor(yy), Math.floor(z + PLAYER_R))) return true;
+  }
+  return false;
+};
+
+const keys = new Set();
+const movePlayer = (dt) => {
+  const sp = MOVE_SPEED * (keys.has('ShiftLeft') ? RUN_MULT : 1);
+  let fx = 0, fz = 0;
+  if(keys.has('KeyW')) fz += 1;
+  if(keys.has('KeyS')) fz -= 1;
+  if(keys.has('KeyA')) fx -= 1;
+  if(keys.has('KeyD')) fx += 1;
+  const l = Math.hypot(fx, fz) || 1;
+  const cy = Math.cos(P.yaw), sy = Math.sin(P.yaw);
+  const move = (fx || fz) ? sp : 0;
+  const vx = ((fz / l) * sy + (fx / l) * cy) * move;
+  const vz = ((fz / l) * cy - (fx / l) * sy) * move;
+  P.vy -= GRAVITY * dt;
+  if(keys.has('Space') && P.onGround) { P.vy = JUMP_V; P.onGround = false; }
+
+  if(collides(P.x, P.y, P.z)) {
+    for(let k = 0; k < NY && collides(P.x, P.y, P.z); k++) P.y += 1;
+    P.vy = 0;
+  }
+  // Автошаг: упёрлись в невысокий уступ — поднимаемся на него и идём дальше. Без этого
+  // на мелких вокселях спотыкаешься о каждую кочку рельефа.
+  const stepUp = (x, z) => {
+    if(!P.onGround) return false;
+    for(let up = 1; up <= STEP_H; up++) if(!collides(x, P.y + up, z)) { P.y += up; return true; }
+    return false;
+  };
+  const nx = P.x + vx * dt;
+  if(!collides(nx, P.y, P.z) || stepUp(nx, P.z)) P.x = nx;
+  const nz = P.z + vz * dt;
+  if(!collides(P.x, P.y, nz) || stepUp(P.x, nz)) P.z = nz;
+  const ny = P.y + P.vy * dt;
+  if(!collides(P.x, ny, P.z)) { P.y = ny; P.onGround = false; }
+  else { if(P.vy < 0) P.onGround = true; P.vy = 0; }
+  if(P.y < 1) { P.y = 1; P.vy = 0; P.onGround = true; }
+
+  const mid = N / 2, trip = CHUNK * 0.5;
+  if(P.x - mid > trip) { shiftWorld(CHUNK, 0); P.x -= CHUNK; }
+  else if(mid - P.x > trip) { shiftWorld(-CHUNK, 0); P.x += CHUNK; }
+  if(P.z - mid > trip) { shiftWorld(0, CHUNK); P.z -= CHUNK; }
+  else if(mid - P.z > trip) { shiftWorld(0, -CHUNK); P.z += CHUNK; }
+};
+
+// ─────────────────────────── RENDER ───────────────────────────
+// Мир живёт на CPU: генерация, сдвиг куба, копание. На GPU уезжают три буфера —
+// индексы клеток, пул блоков с вокселями и верхушка пирамиды, — и уже по ним
+// фрагментный шейдер трассирует каждый пиксель.
+// Нижние уровни пирамиды на GPU не нужны: они весят 19 МБ и их пришлось бы
+// перезаливать на каждом сдвиге. Спуск идёт до узла PYR_BASE, дальше — по вокселям.
+const PYR_BASE = CL;
+const MAX_BLOCKS = 262144;
+
+const pyrOff = [];
+let pyrSize = 0;
+for(let L = 0; L <= LMAX; L++) {
+  pyrOff.push(L <= CL ? 0 : pyrSize);
+  if(L > CL) pyrSize += (N >> L) * (NY >> L) * (N >> L);
+}
+const pyrPack = new Uint8Array(Math.ceil(pyrSize / 4) * 4);
+
+const cv = document.getElementById('cv');
+const hud = document.getElementById('hud');
+let RW = 0, RH = 0;
+
+const gpu = await (async () => {
+  const adapter = await navigator.gpu?.requestAdapter();
+  if(!adapter) return null;
+  const device = await adapter.requestDevice({
+    requiredLimits: { maxStorageBufferBindingSize: Math.min(adapter.limits.maxStorageBufferBindingSize, MAX_BLOCKS * CELL3) },
+  });
+  const ctx = cv.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+
+  const buf = (size, usage) => device.createBuffer({ size: Math.ceil(size / 4) * 4, usage });
+  const ST = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+  const uniBuf = buf(256, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+  const cellBuf = buf(cellB.byteLength, ST);
+  const blockBuf = buf(MAX_BLOCKS * CELL3, ST);
+  const pyrBuf = buf(pyrPack.byteLength, ST);
+  const palBuf = buf(PAL.length * 16, ST);
+
+  const palData = new Float32Array(PAL.length * 4);
+  PAL.forEach((c, i) => { palData[i * 4] = c[0] / 255; palData[i * 4 + 1] = c[1] / 255; palData[i * 4 + 2] = c[2] / 255; });
+  device.queue.writeBuffer(palBuf, 0, palData);
+
+  const code = `
+const N = ${N};
+const NY = ${NY};
+const NC = ${NC};
+const NCY = ${NCY};
+const CL = ${CL}u;
+const CM = ${CM};
+const CELL = ${CELL};
+const CELL3 = ${CELL3}u;
+const MAX_BLOCKS = ${MAX_BLOCKS}u;
+const LMAX = ${LMAX}u;
+const PYR_BASE = ${PYR_BASE}u;
+const EPS = 1e-4;
+const PYR_OFF = array<u32, ${LMAX + 1}>(${pyrOff.map((o) => o + 'u').join(', ')});
+
+
+struct U {
+  origin: vec4<f32>,   // xyz — глаз, w — тангенс половины угла обзора
+  right:  vec4<f32>,   // xyz — вправо, w — соотношение сторон
+  up:     vec4<f32>,   // xyz — вверх, w — дальность луча
+  fwd:    vec4<f32>,   // xyz — вперёд, w — фоновый свет
+  sun:    vec4<f32>,   // xyz — на солнце, w — глубина затенения в углах
+  sunCol: vec4<f32>,   // rgb — цвет солнца, w — косинус радиуса диска
+  skyTop: vec4<f32>,   // rgb — зенит, w — начало ореола
+  skyHor: vec4<f32>,   // rgb — горизонт, w — начало тумана
+  fogCol: vec4<f32>,   // rgb — туман, w — конец тумана
+  opts:   vec4<f32>,   // затенение в углах, тени, дальность тени, глубина тени
+  misc:   vec4<f32>,   // грубость теневого луча, ширина кадра, высота кадра, —
+  dof:    vec4<f32>,   // начало размытия, конец, радиус в пикселях, —
+};
+
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> cells: array<i32>;
+@group(0) @binding(2) var<storage, read> blocks: array<u32>;
+@group(0) @binding(3) var<storage, read> pyr: array<u32>;
+@group(0) @binding(4) var<storage, read> pal: array<vec4<f32>>;
+
+fn outside(p: vec3<i32>) -> bool {
+  return p.x < 0 || p.y < 0 || p.z < 0 || p.x >= N || p.y >= NY || p.z >= N;
+}
+
+fn cellIdx(p: vec3<i32>) -> i32 {
+  return ((p.z >> CL) * NCY + (p.y >> CL)) * NC + (p.x >> CL);
+}
+
+fn voxAt(p: vec3<i32>) -> u32 {
+  if(outside(p)) { return 0u; }
+  let b = cells[cellIdx(p)];
+  // -1 — пустая клетка, меньше -1 — однородная: тип лежит прямо в индексе
+  if(b == -1) { return 0u; }
+  if(b < -1) { return u32(-b - 2); }
+  // блок не влез в буфер — лучше воздух, чем чтение за краем: оно зажимается и клетка
+  // превращается в сплошной одноцветный куб
+  if(u32(b) >= MAX_BLOCKS) { return 0u; }
+  let i = u32(b) * CELL3 + u32(((p.z & CM) * CELL + (p.y & CM)) * CELL + (p.x & CM));
+  return ((blocks[i >> 2u] >> ((i & 3u) * 8u)) & 0xffu);
+}
+
+// Узел размером с клетку — это сама клетка, выше — байты пирамиды
+fn nodeAt(L: u32, p: vec3<i32>) -> u32 {
+  if(L == CL) { return select(1u, 0u, cells[cellIdx(p)] == -1); }
+  let nx = N >> L;
+  let ny = NY >> L;
+  let i = PYR_OFF[L] + u32(((p.z >> L) * ny + (p.y >> L)) * nx + (p.x >> L));
+  return (pyr[i >> 2u] >> ((i & 3u) * 8u)) & 0xffu;
+}
+
+// Выход из узла: по его собственным плоскостям, без накопления шага
+fn exitFast(o: vec3<f32>, inv: vec3<f32>, size: i32, node: vec3<i32>) -> vec2<f32> {
+  let b = vec3<f32>(node * size);
+  var t = vec3<f32>(1e30);
+  let far = b + vec3<f32>(f32(size));
+  if(inv.x > 0.0) { t.x = (far.x - o.x) * inv.x; } else if(inv.x < 0.0) { t.x = (b.x - o.x) * inv.x; }
+  if(inv.y > 0.0) { t.y = (far.y - o.y) * inv.y; } else if(inv.y < 0.0) { t.y = (b.y - o.y) * inv.y; }
+  if(inv.z > 0.0) { t.z = (far.z - o.z) * inv.z; } else if(inv.z < 0.0) { t.z = (b.z - o.z) * inv.z; }
+  var best = t.x; var axis = 0.0;
+  if(t.y < best) { best = t.y; axis = 1.0; }
+  if(t.z < best) { best = t.z; axis = 2.0; }
+  return vec2<f32>(best, axis);
+}
+
+// Коробка мира: отрезок [t0, t1], на котором луч внутри
+fn clipBox(o: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
+  var t0 = 0.0;
+  var t1 = 1e9;
+  let ext = vec3<f32>(f32(N), f32(NY), f32(N));
+  for(var k = 0u; k < 3u; k++) {
+    let oc = o[k]; let dc = d[k];
+    if(abs(dc) < 1e-12) {
+      if(oc < 0.0 || oc > ext[k]) { return vec2<f32>(1.0, 0.0); }
+    } else {
+      var a = -oc / dc; var b = (ext[k] - oc) / dc;
+      if(a > b) { let q = a; a = b; b = q; }
+      t0 = max(t0, a); t1 = min(t1, b);
+    }
+  }
+  return vec2<f32>(max(t0, 0.0), t1);
+}
+
+struct Hit { hit: bool, t: f32, v: vec3<i32>, axis: i32, kind: u32 };
+
+// Доводка попадания: войти в воксель из занятого соседа нельзя — шагаем назад
+fn snapHit(o: vec3<f32>, inv: vec3<f32>, d: vec3<f32>, start: vec3<i32>, t0: f32) -> Hit {
+  var v = start;
+  var out: Hit;
+  out.hit = true; out.t = t0; out.v = v; out.axis = 0; out.kind = 0u;
+  for(var k = 0; k < 4; k++) {
+    var tb = -1e30; var axis = 0;
+    if(inv.x != 0.0) { tb = (f32(select(v.x + 1, v.x, inv.x > 0.0)) - o.x) * inv.x; }
+    if(inv.y != 0.0) { let ty = (f32(select(v.y + 1, v.y, inv.y > 0.0)) - o.y) * inv.y; if(ty > tb) { tb = ty; axis = 1; } }
+    if(inv.z != 0.0) { let tz = (f32(select(v.z + 1, v.z, inv.z > 0.0)) - o.z) * inv.z; if(tz > tb) { tb = tz; axis = 2; } }
+    out.axis = axis;
+    if(tb <= t0 + 1e-9) { out.t = t0; break; }
+    out.t = tb;
+    var n = v;
+    if(axis == 0) { n.x = v.x - select(-1, 1, inv.x > 0.0); }
+    else if(axis == 1) { n.y = v.y - select(-1, 1, inv.y > 0.0); }
+    else { n.z = v.z - select(-1, 1, inv.z > 0.0); }
+    if(outside(n)) { break; }
+    if(voxAt(n) == 0u) { break; }
+    v = n;
+  }
+  out.v = v;
+  return out;
+}
+
+// stopL > 0 — грубый луч: нужен только факт помехи, грань и цвет не считаем
+fn trace(o: vec3<f32>, d: vec3<f32>, tMax: f32, stopL: u32) -> Hit {
+  var out: Hit;
+  out.hit = false; out.t = 0.0; out.v = vec3<i32>(0); out.axis = 0; out.kind = 0u;
+  let clip = clipBox(o, d);
+  if(clip.y <= clip.x) { return out; }
+  var t = clip.x;
+  let t1 = min(clip.y, tMax);
+  let inv = vec3<f32>(
+    select(0.0, 1.0 / d.x, d.x != 0.0),
+    select(0.0, 1.0 / d.y, d.y != 0.0),
+    select(0.0, 1.0 / d.z, d.z != 0.0));
+  var L = LMAX;
+  var axis = 0.0;
+  for(var guard = 0; guard < 4096 && t < t1; guard++) {
+    // шаг вперёд должен быть заметен в float32: на дальности 250 абсолютный 1e-5 съедается
+    let eps = max(EPS, t * 1e-5);
+    let p = o + d * (t + eps);
+    if(any(p < vec3<f32>(0.0)) || any(p >= vec3<f32>(f32(N), f32(NY), f32(N)))) { break; }
+    let ip = vec3<i32>(p);
+    var v = 0u;
+    loop {
+      if(L == 0u) { v = voxAt(ip); break; }
+      v = nodeAt(L, ip);
+      if(v == 0u || L == stopL) { break; }
+      // уровней ниже PYR_BASE на GPU нет — из него сразу к вокселям
+      L = select(L - 1u, 0u, L == PYR_BASE);
+    }
+    if(v == 0u) {
+      let e = exitFast(o, inv, i32(1u << L), ip >> vec3<u32>(L));
+      t = max(e.x, t) + eps;
+      axis = e.y;
+      L = select(min(LMAX, L + 1u), PYR_BASE, L == 0u);
+      continue;
+    }
+    if(stopL > 0u) { out.hit = true; out.t = t; return out; }
+    var h = snapHit(o, inv, d, ip, clip.x);
+    h.kind = voxAt(h.v);
+    return h;
+  }
+  return out;
+}
+
+fn occAt(p: vec3<i32>) -> f32 { return select(0.0, 1.0, voxAt(p) != 0u); }
+fn vAO(s1: f32, s2: f32, c: f32) -> f32 { return select(3.0 - (s1 + s2 + c), 0.0, s1 > 0.0 && s2 > 0.0); }
+
+// Затенение в углах: восемь соседей вокруг грани, билинейно по точке попадания
+fn voxAO(pos: vec3<f32>, n: vec3<f32>) -> f32 {
+  let v = vec3<i32>(floor(pos - n * 0.5));
+  let b = v + vec3<i32>(n);
+  var uu: vec3<i32>; var ww: vec3<i32>; var f: vec2<f32>;
+  let fp = pos - vec3<f32>(v);
+  if(n.x != 0.0) { uu = vec3<i32>(0, 1, 0); ww = vec3<i32>(0, 0, 1); f = vec2<f32>(fp.y, fp.z); }
+  else if(n.y != 0.0) { uu = vec3<i32>(1, 0, 0); ww = vec3<i32>(0, 0, 1); f = vec2<f32>(fp.x, fp.z); }
+  else { uu = vec3<i32>(1, 0, 0); ww = vec3<i32>(0, 1, 0); f = vec2<f32>(fp.x, fp.y); }
+  let sum = occAt(b - uu); let sup = occAt(b + uu);
+  let svm = occAt(b - ww); let svp = occAt(b + ww);
+  let a00 = vAO(sum, svm, occAt(b - uu - ww));
+  let a10 = vAO(sup, svm, occAt(b + uu - ww));
+  let a01 = vAO(sum, svp, occAt(b - uu + ww));
+  let a11 = vAO(sup, svp, occAt(b + uu + ww));
+  let ao = ((a00 * (1.0 - f.x) + a10 * f.x) * (1.0 - f.y) + (a01 * (1.0 - f.x) + a11 * f.x) * f.y) / 3.0;
+  return 1.0 - (1.0 - ao) * u.sun.w;
+}
+
+fn sky(d: vec3<f32>) -> vec3<f32> {
+  let k = clamp(d.y * 1.6 + 0.15, 0.0, 1.0);
+  var c = mix(u.skyHor.rgb, u.skyTop.rgb, k);
+  c = mix(c, u.fogCol.rgb, max(0.0, 1.0 - abs(d.y) * 6.0));
+  let sd = dot(d, u.sun.xyz);
+  let disc = select(0.0, 1.0, sd > u.sunCol.w);
+  let glow = pow(max(0.0, (sd - u.skyTop.w) / (1.0 - u.skyTop.w)), 4.0);
+  return mix(c, u.sunCol.rgb, min(1.0, disc + glow));
+}
+
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+  var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return vec4<f32>(p[i], 0.0, 1.0);
+}
+
+// Цвет одного луча
+fn shade(d: vec3<f32>) -> vec4<f32> {
+  let o = u.origin.xyz;
+  let maxD = u.up.w;
+
+  let h = trace(o, d, maxD, 0u);
+  if(!h.hit) { return vec4<f32>(sky(d), maxD); }   // в альфе — расстояние, его читает размытие
+
+  var n = vec3<f32>(0.0);
+  if(h.axis == 0) { n.x = select(1.0, -1.0, d.x > 0.0); }
+  else if(h.axis == 1) { n.y = select(1.0, -1.0, d.y > 0.0); }
+  else { n.z = select(1.0, -1.0, d.z > 0.0); }
+
+  let pos = o + d * h.t;
+  let lam = max(0.0, dot(n, u.sun.xyz));
+  var k = u.fwd.w + (1.0 - u.fwd.w) * lam;
+  k *= select(select(select(0.9, 0.82, n.x != 0.0), 0.62, n.y < 0.0), 1.0, n.y > 0.0);
+  if(u.opts.x > 0.5) { k *= voxAO(pos, n); }
+  if(u.opts.y > 0.5 && lam > 0.0) {
+    let sh = trace(pos + n * 0.03, u.sun.xyz, u.opts.z, u32(u.misc.x));
+    if(sh.hit) { k *= u.opts.w; }
+  }
+  var col = pal[h.kind].rgb * k;
+  let fog = clamp((h.t - u.skyHor.w) / (u.fogCol.w - u.skyHor.w), 0.0, 1.0);
+  return vec4<f32>(mix(col, u.fogCol.rgb, fog), h.t);
+}
+
+@fragment fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+  let fov = u.origin.w;
+  let uu = (2.0 * frag.x / u.misc.y - 1.0) * fov * u.right.w;
+  let vv = (1.0 - 2.0 * frag.y / u.misc.z) * fov;
+  return shade(normalize(u.right.xyz * uu + u.up.xyz * vv + u.fwd.xyz));
+}
+
+// Второй проход: размытие по глубине. Радиус растёт с расстоянием, поэтому близкое
+// остаётся резким, а даль расплывается — как в объективе, наведённом на ближний план.
+@group(0) @binding(0) var<uniform> ub: U;
+@group(0) @binding(1) var frame: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+
+@fragment fn fsBlur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+  let res = vec2<f32>(ub.misc.y, ub.misc.z);
+  let uv = frag.xy / res;
+  let here = textureSampleLevel(frame, samp, uv, 0.0);
+  let k = clamp((here.a - ub.dof.x) / max(1.0, ub.dof.y - ub.dof.x), 0.0, 1.0);
+  let r = k * k * ub.dof.z;                      // радиус в пикселях
+  if(r < 0.4) { return vec4<f32>(here.rgb, 1.0); }
+  var sum = here.rgb;
+  var wsum = 1.0;
+  // два кольца по восемь отсчётов: ближнее вдвое ближе к центру
+  for(var i = 0u; i < 8u; i++) {
+    let a = (f32(i) + 0.5) * 0.7853982;
+    let dir = vec2<f32>(cos(a), sin(a));
+    for(var ring = 1u; ring <= 2u; ring++) {
+      let off = dir * r * (0.5 * f32(ring));
+      let s = textureSampleLevel(frame, samp, uv + off / res, 0.0);
+      // берём только то, что не ближе к камере: иначе передний план размазывается по фону
+      let w = select(0.0, 1.0, s.a > here.a - r);
+      sum += s.rgb * w;
+      wsum += w;
+    }
+  }
+  return vec4<f32>(sum / wsum, 1.0);
+}
+`;
+
+  const module = device.createShaderModule({ code });
+  const SCENE = 'rgba16float';                    // в альфе едет расстояние, восьми бит мало
+  const pipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module, entryPoint: 'vs' },
+    fragment: { module, entryPoint: 'fs', targets: [{ format: SCENE }] },
+    primitive: { topology: 'triangle-list' },
+  });
+  const blurPipe = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module, entryPoint: 'vs' },
+    fragment: { module, entryPoint: 'fsBlur', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' },
+  });
+  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+  const bind = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: uniBuf } },
+      { binding: 1, resource: { buffer: cellBuf } },
+      { binding: 2, resource: { buffer: blockBuf } },
+      { binding: 3, resource: { buffer: pyrBuf } },
+      { binding: 4, resource: { buffer: palBuf } },
+    ],
+  });
+  return { device, ctx, pipeline, blurPipe, sampler, bind, uniBuf, cellBuf, blockBuf, pyrBuf, format, SCENE };
+})();
+
+let sceneTex = null, blurBind = null;
+
+const resize = () => {
+  RH = RES_H;
+  RW = Math.max(1, Math.round(RH * (innerWidth / innerHeight)));
+  cv.width = RW; cv.height = RH;
+  if(!gpu) return;
+  // промежуточная текстура кадра: в неё пишет трассировка, из неё читает размытие
+  sceneTex?.destroy();
+  sceneTex = gpu.device.createTexture({
+    size: [RW, RH],
+    format: gpu.SCENE,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  blurBind = gpu.device.createBindGroup({
+    layout: gpu.blurPipe.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: gpu.uniBuf } },
+      { binding: 1, resource: sceneTex.createView() },
+      { binding: 2, resource: gpu.sampler },
+    ],
+  });
+};
+
+const uni = new Float32Array(48);
+
+// Заливка изменившегося: блоки поштучно, индексы клеток и верхушка пирамиды целиком
+const upload = () => {
+  compact();                       // однородные блоки схлопываем до заливки — их не придётся везти
+  const q = gpu.device.queue;
+  for(const b of dirtyBlocks) {
+    if(b >= MAX_BLOCKS) { if(!upload.warned) { upload.warned = true; console.warn('блоков больше, чем влезает в GPU-буфер: подними MAX_BLOCKS'); } continue; }
+    q.writeBuffer(gpu.blockBuf, b * CELL3, blocks, b * CELL3, CELL3);
+  }
+  dirtyBlocks.clear();
+  if(dirtyCells) { q.writeBuffer(gpu.cellBuf, 0, cellB); dirtyCells = false; }
+  if(dirtyPyr) {
+    for(let L = CL + 1; L <= LMAX; L++) pyrPack.set(lv[L], pyrOff[L]);
+    q.writeBuffer(gpu.pyrBuf, 0, pyrPack);
+    dirtyPyr = false;
+  }
+};
+
+const render = () => {
+  if(!gpu) return;
+  const fov = Math.tan(FOV_DEG * Math.PI / 360);
+  const cy = Math.cos(P.yaw), sy = Math.sin(P.yaw), cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
+  const sl = Math.hypot(SUN[0], SUN[1], SUN[2]);
+  uni.set([P.x, P.y + EYE, P.z, fov], 0);
+  uni.set([cy, 0, -sy, RW / RH], 4);
+  uni.set([-sp * sy, cp, -sp * cy, MAX_DIST], 8);
+  uni.set([cp * sy, sp, cp * cy, AMBIENT], 12);
+  uni.set([SUN[0] / sl, SUN[1] / sl, SUN[2] / sl, AO_STRENGTH], 16);
+  uni.set([SUN_COLOR[0] / 255, SUN_COLOR[1] / 255, SUN_COLOR[2] / 255, SUN_COS], 20);
+  uni.set([SKY_TOP[0] / 255, SKY_TOP[1] / 255, SKY_TOP[2] / 255, SUN_GLOW], 24);
+  uni.set([SKY_HOR[0] / 255, SKY_HOR[1] / 255, SKY_HOR[2] / 255, MAX_DIST * FOG_START], 28);
+  uni.set([FOG.color.r / 255, FOG.color.g / 255, FOG.color.b / 255, MAX_DIST * FOG_END], 32);
+  uni.set([AO ? 1 : 0, SHADOW ? 1 : 0, SHADOW_DIST, SHADOW_DARK], 36);
+  // на GPU уровней ниже PYR_BASE нет, поэтому грубость теневого луча — либо она, либо воксели
+  uni.set([SHADOW_LOD > 0 ? PYR_BASE : 0, RW, RH, 0], 40);
+  uni.set([MAX_DIST * DOF_START, MAX_DIST * DOF_END, DOF_R, 0], 44);
+  gpu.device.queue.writeBuffer(gpu.uniBuf, 0, uni);
+
+  upload();
+
+  const enc = gpu.device.createCommandEncoder();
+  const draw = (pipe, bind, view) => {
+    const pass = enc.beginRenderPass({
+      colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+    });
+    pass.setPipeline(pipe);
+    pass.setBindGroup(0, bind);
+    pass.draw(3);
+    pass.end();
+  };
+  draw(gpu.pipeline, gpu.bind, sceneTex.createView());              // трассировка в текстуру
+  draw(gpu.blurPipe, blurBind, gpu.ctx.getCurrentTexture().createView());   // размытие на экран
+  gpu.device.queue.submit([enc.finish()]);
+};
+
+(async () => {
+  addEventListener('keydown', (e) => {
+    keys.add(e.code);
+    if(e.code === 'Space') e.preventDefault();
+    const n = Number(e.key);
+    if(n >= 1 && n <= MATS) P.mat = n - 1;
+  });
+  addEventListener('keyup', (e) => keys.delete(e.code));
+  cv.addEventListener('click', () => { if(document.pointerLockElement !== cv) cv.requestPointerLock(); });
+  addEventListener('mousemove', (e) => {
+    if(document.pointerLockElement !== cv) return;
+    P.yaw += e.movementX * MOUSE_SENS;
+    P.pitch = Math.max(-1.5, Math.min(1.5, P.pitch - e.movementY * MOUSE_SENS));
+  });
+  addEventListener('contextmenu', (e) => e.preventDefault());
+  addEventListener('mousedown', (e) => {
+    if(document.pointerLockElement !== cv) return;
+    const cyy = Math.cos(P.yaw), syy = Math.sin(P.yaw), cpp = Math.cos(P.pitch), spp = Math.sin(P.pitch);
+    const dx = cpp * syy, dy = spp, dz = cpp * cyy;
+    if(!trace(P.x, P.y + EYE, P.z, dx, dy, dz, REACH)) return;
+
+    const px = P.x + dx * st.t, py = P.y + EYE + dy * st.t, pz = P.z + dz * st.t;
+    const off = e.button === 0 ? -0.5 : 0.5;
+    sphereEdit(px + st.nx * off, py + st.ny * off, pz + st.nz * off, DIG_R, e.button === 0 ? 0 : base(P.mat) + 1);
+  });
+  addEventListener('resize', resize);
+
+  const hud = document.getElementById('hud');
+
+  let last = performance.now(), fps = 0, hudT = 0, renderMs = 0;
+  const frame = (now) => {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    if(dt > 0) fps = fps ? fps * 0.9 + 0.1 / dt : 1 / dt;
+    movePlayer(dt);
+    pumpPending(LOAD_BUDGET_MS);
+    const t0 = performance.now();
+    render();
+    renderMs = renderMs * 0.9 + (performance.now() - t0) * 0.1;
+    if(now - hudT > 250) {
+      hudT = now;
+      hud.textContent =
+        `${RW}×${RH} · ${(RW * RH)} rays · world ${N}×${NY}×${N} · ${fps |0 } fps · frame ${renderMs.toFixed(1)} ms\n` +
+        `voxels ${(((blockCount - freeB.length) * CELL3 + cellB.byteLength) / 1048576).toFixed(1)} MB · pyramid ${(pyrBytes / 1048576).toFixed(1)} MB\n`
+    }
+    requestAnimationFrame(frame);
+  };
+
+  const knobs = {
+    get RES_H() { return RES_H; }, set RES_H(v) { RES_H = v; },
+    get DIG_R() { return DIG_R; }, set DIG_R(v) { DIG_R = v; },
+    get DOF_START() { return DOF_START; }, set DOF_START(v) { DOF_START = v; },
+    get DOF_END() { return DOF_END; }, set DOF_END(v) { DOF_END = v; },
+    get DOF_R() { return DOF_R; }, set DOF_R(v) { DOF_R = v; },
+    get FOG_START() { return FOG_START; }, set FOG_START(v) { FOG_START = v; },
+    get FOG_END() { return FOG_END; }, set FOG_END(v) { FOG_END = v; },
+    get FOV_DEG() { return FOV_DEG; }, set FOV_DEG(v) { FOV_DEG = v; },
+    get MAX_DIST() { return MAX_DIST; }, set MAX_DIST(v) { MAX_DIST = v; },
+    get SHADOW() { return SHADOW; }, set SHADOW(v) { SHADOW = v; },
+    get SHADOW_DIST() { return SHADOW_DIST; }, set SHADOW_DIST(v) { SHADOW_DIST = v; },
+    get SHADOW_DARK() { return SHADOW_DARK; }, set SHADOW_DARK(v) { SHADOW_DARK = v; },
+    get SHADOW_LOD() { return SHADOW_LOD; }, set SHADOW_LOD(v) { SHADOW_LOD = v; },
+  };
+  const pane = new Pane({ container: document.getElementById('panel'), title: 'MicroCube' });
+  pane.addBinding(knobs, 'RES_H', { label: 'resolution', min: 60, max: 2160, step: 20 }).on('change', resize);
+  pane.addBinding(knobs, 'FOV_DEG', { label: 'fov', min: 40, max: 110, step: 1 });
+  pane.addBinding(knobs, 'MAX_DIST', { label: 'far', min: 40, max: N / 2, step: 10 });
+  pane.addBinding(knobs, 'SHADOW', { label: 'shadows' });
+  pane.addBinding(knobs, 'SHADOW_DIST', { label: 'shadow far', min: 8, max: N / 2, step: 8 });
+  pane.addBinding(knobs, 'SHADOW_DARK', { label: 'shadow dark', min: 0.1, max: 1, step: 0.05 });
+  pane.addBinding(knobs, 'SHADOW_LOD', { label: 'shadow lod', min: 0, max: 4, step: 1 });
+  pane.addBinding(knobs, 'DIG_R', { label: 'dig radius', min: 1, max: 40, step: 1 });
+  pane.addBinding(knobs, 'DOF_R', { label: 'blur radius', min: 0, max: 12, step: 0.5 });
+  pane.addBinding(knobs, 'DOF_START', { label: 'blur start', min: 0, max: 1, step: 0.01 });
+  pane.addBinding(knobs, 'DOF_END', { label: 'blur end', min: 0, max: 1, step: 0.01 });
+  pane.addBinding(knobs, 'FOG_START', { label: 'fog start', min: 0, max: 1, step: 0.01 });
+  pane.addBinding(knobs, 'FOG_END', { label: 'fog end', min: 0, max: 1, step: 0.01 });
+  pane.addBinding(FOG, 'color', { label: 'fog colour' });
+  pane.addButton({ title: '@vseplet' }).on('click', () => open('https://x.com/vseplet', '_blank'));
+
+  // Старт: мир строится полосами, между полосами отдаём кадр браузеру — иначе вкладка
+  // висит чёрной несколько секунд и непонятно, жива ли она.
+  const loadBox = document.getElementById('load');
+  const loadText = document.getElementById('loadText');
+  const loadBar = document.querySelector('#bar > i');
+  const step = (label, done) => {
+    loadText.textContent = label;
+    loadBar.style.width = `${Math.round(done * 100)}%`;
+    return new Promise(requestAnimationFrame);
+  };
+
+  resize();
+  const t0 = performance.now();
+  for(let z = 0; z < N; z++) {
+    for(let x = 0; x < N; x++) genColumn(x, z);
+    if((z & 31) === 31) await step(`generating world · ${(z + 1) / 10.24 | 0}%`, (z + 1) / N * 0.9);
+  }
+  await step('building pyramid', 0.94);
+  reduceBox(0, 0, 0, N - 1, NY - 1, N - 1);
+  await step('uploading to gpu', 0.98);
+  render();
+  console.log(`мир готов за ${((performance.now() - t0) / 1000).toFixed(1)} с`);
+  loadBox.classList.add('done');
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
