@@ -61,11 +61,15 @@ struct SceneData {
             SIMD3<Float>(303, 98.96, 296.5),
             SIMD3<Float>(285, 90.96, 320.5)
         ]
+        // Every figure faces this point on the walking route (the tour's
+        // Watchers viewpoint), so from the path the watchers watch you.
+        let watchPoint = SIMD2<Float>(255, 272)
         let creatures = creatureCenters.enumerated().map { index, center in
             let anchorScaledCenter = heroScalePoint(center)
             let creatureCenter = SIMD3<Float>(anchorScaledCenter.x, center.y, anchorScaledCenter.z)
             let scaledBoundsMin = heroScalePoint(SIMD3<Float>(creatureCenter.x - 5, creatureCenter.y - 11, creatureCenter.z - 5), around: creatureCenter)
             let scaledBoundsMax = heroScalePoint(SIMD3<Float>(creatureCenter.x + 5, creatureCenter.y + 11, creatureCenter.z + 5), around: creatureCenter)
+            let facing = atan2(watchPoint.x - creatureCenter.x, watchPoint.y - creatureCenter.z)
             return SDFInstance(
                 sweptBoundsMin: SIMD4<Float>(scaledBoundsMin, 0),
                 sweptBoundsMax: SIMD4<Float>(
@@ -75,7 +79,7 @@ struct SceneData {
                     0
                 ),
                 positionScale: SIMD4<Float>(creatureCenter, 3),
-                rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
+                rotationQuaternion: SIMD4<Float>(0, sin(facing / 2), 0, cos(facing / 2)),
                 parameters: SIMD4<Float>(12, Float(index) * 0.83, 0, 0),
                 metadata: SIMD4<UInt32>(1, 3, 1, UInt32(index + 2))
             )

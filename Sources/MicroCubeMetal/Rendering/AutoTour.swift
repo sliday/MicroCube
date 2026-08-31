@@ -83,10 +83,12 @@ struct AutoTourTimeline {
             evidenceView: .final,
             sectionTitle: "THE SHORE"
         ),
+        // At the waterline, the coast receding ahead and the warm sky
+        // window over the open sea.
         Waypoint(
             time: 12,
-            cameraPosition: SIMD3<Float>(266, 62, 152),
-            lookAtTarget: SIMD3<Float>(238, 52.5, 148),
+            cameraPosition: SIMD3<Float>(262, 56.9, 148),
+            lookAtTarget: SIMD3<Float>(236, 52.5, 136),
             evidenceView: .final,
             sectionTitle: "ALONG THE WATER"
         ),
@@ -95,7 +97,7 @@ struct AutoTourTimeline {
             cameraPosition: SIMD3<Float>(252, 95.3, 252),
             lookAtTarget: SIMD3<Float>(262.5, 92, 297.5),
             evidenceView: .final,
-            sectionTitle: "SOMETHING IN THE FOG"
+            sectionTitle: "SHAPES IN THE FOG"
         ),
         Waypoint(
             time: 36,
@@ -104,17 +106,22 @@ struct AutoTourTimeline {
             evidenceView: .final,
             sectionTitle: "THE WATCHERS"
         ),
+        // Rim reveal: stand on the east rim above the shroom bowl looking
+        // west along its axis, both glowing clusters stacked in depth.
         Waypoint(
             time: 48,
-            cameraPosition: SIMD3<Float>(290, 92.6, 268),
-            lookAtTarget: SIMD3<Float>(274, 80.5, 278),
+            cameraPosition: SIMD3<Float>(290, 95.3, 277),
+            lookAtTarget: SIMD3<Float>(270, 80, 279),
             evidenceView: .final,
             sectionTitle: "THE GLOW BELOW"
         ),
+        // Descend into the bowl: the near cluster looms beside the lens,
+        // the floor glows underfoot, the second cluster's caps show beyond
+        // the western rise.
         Waypoint(
             time: 60,
-            cameraPosition: SIMD3<Float>(279, 85.8, 273),
-            lookAtTarget: SIMD3<Float>(250, 87.5, 284),
+            cameraPosition: SIMD3<Float>(281, 82.3, 279),
+            lookAtTarget: SIMD3<Float>(250, 89.6, 284),
             evidenceView: .final,
             sectionTitle: "AMONG THE LANTERNS"
         ),
@@ -125,12 +132,16 @@ struct AutoTourTimeline {
             evidenceView: .final,
             sectionTitle: "THE RIDGE"
         ),
+        // Finale: down from the ridge into the western combe, the beacon
+        // cluster from THE RIDGE now a full glowing crown on the summit 35
+        // units ahead, stems and caps against the sky. The wrap leg carries
+        // the walk back down to the opening shore.
         Waypoint(
             time: 84,
-            cameraPosition: SIMD3<Float>(295, 79, 225),
-            lookAtTarget: SIMD3<Float>(282, 53, 160),
+            cameraPosition: SIMD3<Float>(288, 87.1, 220),
+            lookAtTarget: SIMD3<Float>(260, 101, 208),
             evidenceView: .final,
-            sectionTitle: "BACK TO THE SEA"
+            sectionTitle: "TOWARD THE LIGHT"
         ),
     ]
 

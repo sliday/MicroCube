@@ -45,6 +45,16 @@ inline float distanceToInstance(float3 point,
     float scale = max(instance.positionScale.w, 1.0e-4f);
     switch (instance.metadata.x) {
         case 1u: {
+            // Facing: rotationQuaternion carries a Y-axis rotation
+            // (0, sin(yaw/2), 0, cos(yaw/2)). Rotate the sample point into
+            // the creature's frame so each figure faces where the scene
+            // points it (legs stride along local +Z, the facing direction).
+            float qy = instance.rotationQuaternion.y;
+            float qw = instance.rotationQuaternion.w;
+            float sinYaw = 2.0f * qy * qw;
+            float cosYaw = 1.0f - 2.0f * qy * qy;
+            local = float3(local.x * cosYaw - local.z * sinYaw, local.y,
+                           local.x * sinYaw + local.z * cosYaw);
             float height = max(instance.parameters.x, scale * 2.0f);
             float gait = instance.parameters.z;
             float footY = -height * 0.5f - scale * 0.32f + scale * 0.17f;

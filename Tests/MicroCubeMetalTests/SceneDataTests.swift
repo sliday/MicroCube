@@ -271,6 +271,26 @@ final class SceneDataTests: XCTestCase {
         }
     }
 
+    func testHeroCreaturesFaceTheWatchPoint() throws {
+        let scene = try SceneData.makeHero()
+        let creatures = scene.sdfInstances.filter { $0.metadata.x == 1 }
+        XCTAssertEqual(creatures.count, 6)
+        for creature in creatures {
+            let q = creature.rotationQuaternion
+            XCTAssertEqual(q.x, 0)
+            XCTAssertEqual(q.z, 0)
+            XCTAssertEqual(q.y * q.y + q.w * q.w, 1, accuracy: 0.0001)
+            let sinYaw = 2 * q.y * q.w
+            let cosYaw = 1 - 2 * q.y * q.y
+            let direction = simd_normalize(SIMD2<Float>(
+                255 - creature.positionScale.x,
+                272 - creature.positionScale.z
+            ))
+            XCTAssertEqual(sinYaw, direction.x, accuracy: 0.001)
+            XCTAssertEqual(cosYaw, direction.y, accuracy: 0.001)
+        }
+    }
+
     func testCreatureWanderStaysGroundedOnTerrainAtAllSampledTimes() throws {
         let scene = try SceneData.makeHero()
         let creatures = scene.sdfInstances.filter { $0.metadata.x == 1 }
@@ -300,6 +320,14 @@ final class SceneDataTests: XCTestCase {
 
     func testHeroCreatureSDFHasSeparatedLimbsHornsAndAnimatedGait() throws {
         let source = """
+        // Probe offsets are authored in the creature's LOCAL frame; the
+        // facing rotation (rotationQuaternion, Y axis) maps them to world.
+        inline float3 probeFacingOffset(float3 p, float4 q) {
+            float sinYaw = 2.0f * q.y * q.w;
+            float cosYaw = 1.0f - 2.0f * q.y * q.y;
+            return float3(p.x * cosYaw + p.z * sinYaw, p.y,
+                          -p.x * sinYaw + p.z * cosYaw);
+        }
         kernel void probeHeroCreatureShape(
             device const SDFInstance *sdfs [[buffer(0)]],
             device float *distances [[buffer(1)]],
@@ -312,12 +340,13 @@ final class SceneDataTests: XCTestCase {
             float height = first.parameters.x;
             float legX = scale * 0.25f;
             float footY = -height * 0.5f - scale * 0.32f + scale * 0.17f;
-            distances[0] = distanceToInstance(first.positionScale.xyz + float3(-legX, footY, 0.0f), first, 8u);
-            distances[1] = distanceToInstance(first.positionScale.xyz + float3(legX, footY, 0.0f), first, 8u);
-            distances[2] = distanceToInstance(first.positionScale.xyz + float3(0.0f, footY, 0.0f), first, 8u);
-            distances[3] = distanceToInstance(first.positionScale.xyz + float3(scale * 0.72f, -0.2f, 0.0f), first, 8u);
-            distances[4] = distanceToInstance(first.positionScale.xyz + float3(scale * 0.38f, height * 0.67f, 0.0f), first, 8u);
-            float3 gaitSample = float3(-legX, footY, 0.0f);
+            float4 q = first.rotationQuaternion;
+            distances[0] = distanceToInstance(first.positionScale.xyz + probeFacingOffset(float3(-legX, footY, 0.0f), q), first, 8u);
+            distances[1] = distanceToInstance(first.positionScale.xyz + probeFacingOffset(float3(legX, footY, 0.0f), q), first, 8u);
+            distances[2] = distanceToInstance(first.positionScale.xyz + probeFacingOffset(float3(0.0f, footY, 0.0f), q), first, 8u);
+            distances[3] = distanceToInstance(first.positionScale.xyz + probeFacingOffset(float3(scale * 0.72f, -0.2f, 0.0f), q), first, 8u);
+            distances[4] = distanceToInstance(first.positionScale.xyz + probeFacingOffset(float3(scale * 0.38f, height * 0.67f, 0.0f), q), first, 8u);
+            float3 gaitSample = probeFacingOffset(float3(-legX, footY, 0.0f), q);
             float firstGait = distanceToInstance(first.positionScale.xyz + gaitSample, first, 8u);
             float secondGait = distanceToInstance(second.positionScale.xyz + gaitSample, second, 8u);
             distances[5] = abs(firstGait - secondGait);

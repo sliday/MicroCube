@@ -5,23 +5,24 @@ import XCTest
 @testable import MicroCubeMetal
 
 final class AutoTourTimelineTests: XCTestCase {
-    func testBoundarySamplesSelectSpecifiedSectionsAndEvidenceViews() {
+    func testBoundarySamplesSelectSpecifiedSectionsTitlesAndEvidenceViews() {
         let timeline = AutoTourTimeline()
-        let cases: [(TimeInterval, Int, EvidenceView)] = [
-            (0, 0, .final),
-            (12, 1, .final),
-            (24, 2, .final),
-            (36, 3, .final),
-            (48, 4, .final),
-            (60, 5, .final),
-            (72, 6, .final),
-            (84, 7, .final),
-            (96, 0, .final),
+        let cases: [(TimeInterval, Int, String, EvidenceView)] = [
+            (0, 0, "THE SHORE", .final),
+            (12, 1, "ALONG THE WATER", .final),
+            (24, 2, "SHAPES IN THE FOG", .final),
+            (36, 3, "THE WATCHERS", .final),
+            (48, 4, "THE GLOW BELOW", .final),
+            (60, 5, "AMONG THE LANTERNS", .final),
+            (72, 6, "THE RIDGE", .final),
+            (84, 7, "TOWARD THE LIGHT", .final),
+            (96, 0, "THE SHORE", .final),
         ]
 
-        for (time, sectionID, evidenceView) in cases {
+        for (time, sectionID, title, evidenceView) in cases {
             let sample = timeline.sample(at: time)
             XCTAssertEqual(sample.sectionID, sectionID, "time=\(time)")
+            XCTAssertEqual(sample.sectionTitle, title, "time=\(time)")
             XCTAssertEqual(sample.evidenceView, evidenceView, "time=\(time)")
         }
     }
