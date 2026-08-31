@@ -124,7 +124,7 @@ struct SceneData {
                     cluster.positionScale.x,
                     cluster.positionScale.y + 3.2,
                     cluster.positionScale.z,
-                    18
+                    9
                 ),
                 colorIntensity: SIMD4<Float>(0.25, 0.95, 0.85, 10)
             )

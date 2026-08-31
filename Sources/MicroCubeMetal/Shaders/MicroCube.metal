@@ -463,6 +463,13 @@ kernel void raycastHybrid(
         lighting *= hit.normal.y > 0.0f ? 1.0f : (hit.normal.y < 0.0f ? 0.62f : (hit.normal.x != 0.0f ? 0.82f : 0.9f));
         if (hit.primitiveKind == 0u) {
             lighting *= voxelAO(volume, point, hit.normal);
+            int3 rimBase = int3(clamp(point + float3(0.0f, 5.0f, 0.0f), float3(0.0f), float3(511.0f)));
+            float enclosure = 0.0f;
+            enclosure += volume.read(uint3(clamp(rimBase + int3(8, 0, 0), int3(0), int3(511))) >> 2, 2u).x != 0u ? 0.25f : 0.0f;
+            enclosure += volume.read(uint3(clamp(rimBase + int3(-8, 0, 0), int3(0), int3(511))) >> 2, 2u).x != 0u ? 0.25f : 0.0f;
+            enclosure += volume.read(uint3(clamp(rimBase + int3(0, 0, 8), int3(0), int3(511))) >> 2, 2u).x != 0u ? 0.25f : 0.0f;
+            enclosure += volume.read(uint3(clamp(rimBase + int3(0, 0, -8), int3(0), int3(511))) >> 2, 2u).x != 0u ? 0.25f : 0.0f;
+            lighting *= 1.0f - max(0.0f, enclosure - 0.25f) * 0.7f;
         }
 
         if ((shadowsEnabled || evidenceView == 7u) && !isGlass && diffuse > 0.0f) {
@@ -490,6 +497,10 @@ kernel void raycastHybrid(
             : materials[materialIndex].baseColorRoughness.xyz;
         float structure = 0.5f;
         if (hit.primitiveKind == 0u) {
+            if (hit.normal.y > 0.5f && hit.material >= 1u && hit.material <= 42u) {
+                uint band = (hit.material - 1u) / 3u;
+                baseColor = kPalette[1u + band * 3u + 1u];
+            }
             float patch = noise3D(point.x * 0.6f, point.y * 0.6f, point.z * 0.6f, 89);
             float fine = noise3D(point.x * 1.9f, point.y * 1.9f, point.z * 1.9f, 83);
             float speckle = hash2(
@@ -713,8 +724,10 @@ kernel void raycastHybrid(
         float fog = saturate((hit.t - fogStart) / max(0.001f, fogEnd - fogStart));
         color = mix(color, kFogColor, fog);
         if (hit.primitiveKind != 0u) {
-            color += materials[materialIndex].emissionMetalness.xyz
-                * (0.55f + 0.45f * saturate(hit.normal.y))
+            float3 emission = materials[materialIndex].emissionMetalness.xyz;
+            float rim = 1.0f - saturate(abs(dot(hit.normal, direction)));
+            color += emission
+                * (0.35f + 0.65f * saturate(hit.normal.y) + rim * rim * 0.55f)
                 * (1.0f - 0.4f * fog);
         }
     } else {
