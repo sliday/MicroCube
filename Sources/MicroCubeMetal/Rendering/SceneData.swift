@@ -181,7 +181,7 @@ struct SceneData {
             ),
             Material(
                 baseColorRoughness: SIMD4<Float>(0.10, 0.22, 0.20, 0.18),
-                emissionMetalness: SIMD4<Float>(0.10, 0.60, 0.52, 0.45),
+                emissionMetalness: SIMD4<Float>(0.10, 0.60, 0.52, 0.22),
                 opticalAbsorptionIOR: SIMD4<Float>(0, 0, 0, 1),
                 transmissionAcoustic: .zero
             )

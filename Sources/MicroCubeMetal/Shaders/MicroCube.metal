@@ -479,7 +479,7 @@ kernel void raycastHybrid(
                 );
             }
             if (shadowsEnabled && surfaceExactShadow) {
-                lighting *= 0.22f;
+                lighting *= 0.26f;
             }
         }
 
@@ -614,7 +614,7 @@ kernel void raycastHybrid(
                 float horizontal2 = delta.x * delta.x + delta.z * delta.z;
                 float core = exp(-horizontal2 * 0.5f) * saturate(1.0f - abs(delta.y) / 6.0f);
                 pool += poolLight.colorIntensity.xyz * poolLight.colorIntensity.w
-                    * (core * 0.9f + exp(-dot(delta, delta) * 0.06f));
+                    * (core * 0.9f + exp(-dot(delta, delta) * 0.11f));
             }
             color += pool * 0.032f;
         }
@@ -738,9 +738,9 @@ kernel void raycastHybrid(
             float lane = saturate(dot(flatDir, flatSun));
             float lane2 = lane * lane;
             float lane8 = lane2 * lane2 * lane2 * lane2;
-            constexpr float3 seaDeep = float3(0.030f, 0.042f, 0.050f);
-            constexpr float3 seaReflect = float3(0.300f, 0.330f, 0.375f);
-            constexpr float3 seaGlow = float3(0.62f, 0.46f, 0.34f);
+            constexpr float3 seaDeep = float3(0.024f, 0.034f, 0.040f);
+            constexpr float3 seaReflect = float3(0.240f, 0.264f, 0.300f);
+            constexpr float3 seaGlow = float3(0.55f, 0.41f, 0.30f);
             float3 reflectTone = mix(seaReflect, seaGlow, lane8 * 0.55f);
             float3 waterColor = mix(seaDeep, reflectTone, saturate(fresnel * (0.70f + chop * 0.45f)));
             waterColor += seaGlow * lane8 * chopMask * grazing2 * 0.30f;
@@ -765,11 +765,11 @@ kernel void raycastHybrid(
             float along = clamp(dot(toLight, direction), 0.0f, volumeLimit);
             float3 offset = origin + direction * along - glowLight.positionRadius.xyz;
             float d2 = dot(offset, offset);
-            float nearFade = saturate(dot(toLight, toLight) / 144.0f);
+            float nearFade = saturate(dot(toLight, toLight) / 400.0f);
             halo += glowLight.colorIntensity.xyz * glowLight.colorIntensity.w
-                * exp(-d2 * 0.22f) * nearFade;
+                * exp(-d2 * 0.45f) * nearFade;
         }
-        color += halo * 0.016f;
+        color += halo * 0.012f;
     }
 
     float transmittance = 1.0f;

@@ -1028,9 +1028,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             cameraForwardAndFOV: SIMD4<Float>(forward.x, forward.y, forward.z, halfFOV),
             cameraRightAndAspect: SIMD4<Float>(right.x, right.y, right.z, aspect),
             cameraUpAndMaxDistance: SIMD4<Float>(up.x, up.y, up.z, 256.0),
-            sunDirectionAndAmbient: SIMD4<Float>(sun.x, sun.y, sun.z, 0.26),
+            sunDirectionAndAmbient: SIMD4<Float>(sun.x, sun.y, sun.z, 0.22),
             viewportAndOptions: SIMD4<UInt32>(UInt32(width), UInt32(height), frameIndex, options),
-            fogAndExposure: SIMD4<Float>(0.09, 0.85, 0.85, Float(scaleController.scale))
+            fogAndExposure: SIMD4<Float>(0.09, 0.85, 0.78, Float(scaleController.scale))
         )
     }
 

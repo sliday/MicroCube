@@ -868,16 +868,16 @@ inline float voxelAO(texture3d<uint, access::read> volume, float3 point, float3 
     float ao01 = vertexAO(sideANegative, sideBPositive, occupancy(volume, base - tangentA + tangentB));
     float ao11 = vertexAO(sideAPositive, sideBPositive, occupancy(volume, base + tangentA + tangentB));
     float ao = mix(mix(ao00, ao10, fraction.x), mix(ao01, ao11, fraction.x), fraction.y) / 3.0f;
-    return mix(0.12f, 1.0f, ao);
+    return mix(0.16f, 1.0f, ao);
 }
 
-constant float3 kFogColor = float3(0.545f, 0.585f, 0.645f);
+constant float3 kFogColor = float3(0.44f, 0.47f, 0.52f);
 
 inline float3 skyColor(float3 direction, float3 sunDirection) {
-    constexpr float3 skyTop = float3(0.30f, 0.35f, 0.43f);
-    constexpr float3 skyHorizon = float3(0.54f, 0.585f, 0.645f);
-    constexpr float3 cloudDark = float3(0.335f, 0.365f, 0.42f);
-    constexpr float3 cloudBright = float3(0.72f, 0.71f, 0.70f);
+    constexpr float3 skyTop = float3(0.24f, 0.28f, 0.34f);
+    constexpr float3 skyHorizon = float3(0.43f, 0.47f, 0.52f);
+    constexpr float3 cloudDark = float3(0.27f, 0.29f, 0.34f);
+    constexpr float3 cloudBright = float3(0.58f, 0.57f, 0.56f);
     constexpr float3 sunWarm = float3(1.05f, 0.68f, 0.48f);
     constexpr float3 warmBleed = float3(1.10f, 0.94f, 0.82f);
     float height = saturate(direction.y * 1.35f + 0.12f);
