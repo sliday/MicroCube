@@ -80,15 +80,33 @@ struct SceneData {
                 metadata: SIMD4<UInt32>(1, 3, 1, UInt32(index + 2))
             )
         }
+        let shroomSpots: [(x: Float, terrain: Float, z: Float)] = [
+            (274, 79, 278),
+            (250, 86, 284),
+            (220, 72, 236),
+            (232, 73, 356),
+            (292, 79, 254),
+            (268, 86, 338),
+            (344, 74, 360)
+        ]
+        let shroomScale: Float = 2.4
+        let shroomClusters = shroomSpots.enumerated().map { index, spot -> SDFInstance in
+            let center = SIMD3<Float>(spot.x, spot.terrain + shroomScale * 0.5, spot.z)
+            return SDFInstance(
+                sweptBoundsMin: SIMD4<Float>(center.x - 2.7, center.y - 1.4, center.z - 2.7, 0),
+                sweptBoundsMax: SIMD4<Float>(center.x + 2.7, center.y + 0.9, center.z + 2.7, 0),
+                positionScale: SIMD4<Float>(center, shroomScale),
+                rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
+                parameters: SIMD4<Float>(5, Float(index) * 0.73, 0, 0),
+                metadata: SIMD4<UInt32>(2, 5, 1, UInt32(9 + index))
+            )
+        }
         let lightColors = [
             SIMD3<Float>(0.55, 0.62, 0.68),
             SIMD3<Float>(0.50, 0.64, 0.58),
-            SIMD3<Float>(0.52, 0.58, 0.66),
-            SIMD3<Float>(0.48, 0.60, 0.55),
-            SIMD3<Float>(0.56, 0.60, 0.64),
-            SIMD3<Float>(0.50, 0.62, 0.62)
+            SIMD3<Float>(0.52, 0.58, 0.66)
         ]
-        let lights = creatures.enumerated().map { index, creature in
+        let creatureLights = creatures.prefix(3).enumerated().map { index, creature -> Light in
             let color = lightColors[index]
             return Light(
                 positionRadius: SIMD4<Float>(
@@ -100,6 +118,18 @@ struct SceneData {
                 colorIntensity: SIMD4<Float>(color.x, color.y, color.z, 6)
             )
         }
+        let shroomLights = [shroomClusters[0], shroomClusters[1], shroomClusters[6]].map { cluster in
+            Light(
+                positionRadius: SIMD4<Float>(
+                    cluster.positionScale.x,
+                    cluster.positionScale.y + 3.2,
+                    cluster.positionScale.z,
+                    18
+                ),
+                colorIntensity: SIMD4<Float>(0.25, 0.95, 0.85, 10)
+            )
+        }
+        let lights = creatureLights + shroomLights
         let gaussians = (0..<8).map { index -> Gaussian in
             let angle = Float(index) * (.pi * 2 / 8)
             let center = heroScalePoint(SIMD3<Float>(
@@ -148,10 +178,16 @@ struct SceneData {
                 emissionMetalness: .zero,
                 opticalAbsorptionIOR: SIMD4<Float>(0.18, 0.07, 0.03, 1.5),
                 transmissionAcoustic: .zero
+            ),
+            Material(
+                baseColorRoughness: SIMD4<Float>(0.10, 0.22, 0.20, 0.18),
+                emissionMetalness: SIMD4<Float>(0.10, 0.60, 0.52, 0.45),
+                opticalAbsorptionIOR: SIMD4<Float>(0, 0, 0, 1),
+                transmissionAcoustic: .zero
             )
         ]
         return try build(
-            sdfInstances: creatures,
+            sdfInstances: creatures + shroomClusters,
             gaussians: gaussians,
             lights: lights,
             materials: materials

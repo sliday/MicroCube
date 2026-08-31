@@ -93,6 +93,25 @@ inline float distanceToInstance(float3 point,
             creature = smoothUnion(creature, min(leftArm, rightArm), scale * 0.08f);
             return min(creature, min(leftHorn, rightHorn));
         }
+        case 2u: {
+            float phase = instance.parameters.y;
+            float d = 1.0e9f;
+            uint count = uint(clamp(instance.parameters.x, 1.0f, 6.0f));
+            for (uint i = 0u; i < count; ++i) {
+                float f1 = fract(float(i) * 0.6180f + phase);
+                float f2 = fract(float(i) * 0.3819f + phase * 1.7f);
+                float angle = (float(i) + phase) * 2.3999f;
+                float ringRadius = scale * (0.22f + 0.62f * f1);
+                float3 base = float3(cos(angle) * ringRadius, -scale * 0.5f, sin(angle) * ringRadius);
+                float stemHeight = scale * (0.34f + 0.26f * f2);
+                float3 capCenter = base + float3(0.0f, stemHeight, 0.0f);
+                float stem = sdCapsule(local, base, capCenter, scale * (0.045f + 0.025f * f1));
+                float3 q = local - capCenter;
+                float cap = (length(q * float3(1.0f, 1.8f, 1.0f)) - scale * (0.15f + 0.08f * f2)) * 0.55f;
+                d = min(d, smoothUnion(stem, cap, scale * 0.06f));
+            }
+            return d;
+        }
         case 3u:
             return fractalDistance(local / scale, fractalIterations) * scale;
         default:

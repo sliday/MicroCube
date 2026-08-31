@@ -43,12 +43,47 @@ final class SceneDataTests: XCTestCase {
         XCTAssertEqual(Set(creatures.map(\.metadata.y)).count, 1)
         XCTAssertLessThan(simd_length(emission), 0.05)
         XCTAssertLessThan(colorRange, 0.04)
-        for (creature, light) in zip(creatures, scene.lights) {
+        for (index, creature) in creatures.prefix(3).enumerated() {
+            let light = scene.lights[index]
             XCTAssertGreaterThanOrEqual(light.positionRadius.y - creature.positionScale.y, 5)
             XCTAssertLessThanOrEqual(light.positionRadius.y - creature.positionScale.y, 7.5)
             XCTAssertGreaterThanOrEqual(light.positionRadius.w, 20)
             XCTAssertLessThanOrEqual(light.positionRadius.w, 28)
             XCTAssertEqual(light.colorIntensity.w, 6, accuracy: 0.0001)
+        }
+    }
+
+    func testHeroShroomClustersAreEmissiveTealGroundedAndLit() throws {
+        let scene = try SceneData.makeHero()
+        let clusters = scene.sdfInstances.filter { $0.metadata.x == 2 }
+        let expectedTerrainHeights: [Float] = [79, 86, 72, 73, 79, 86, 74]
+
+        XCTAssertEqual(clusters.count, 7)
+        for (index, cluster) in clusters.enumerated() {
+            XCTAssertEqual(cluster.metadata.y, 5)
+            XCTAssertEqual(cluster.metadata.z & 1, 1)
+            XCTAssertEqual(cluster.positionScale.w, 2.4, accuracy: 0.0001)
+            XCTAssertEqual(
+                cluster.positionScale.y - cluster.positionScale.w * 0.5,
+                expectedTerrainHeights[index],
+                accuracy: 1
+            )
+        }
+        let material = scene.materials[5]
+        XCTAssertGreaterThan(material.emissionMetalness.y, 0.4)
+        XCTAssertGreaterThan(material.emissionMetalness.z, 0.3)
+        XCTAssertLessThan(material.emissionMetalness.x, 0.3)
+        XCTAssertGreaterThan(material.emissionMetalness.w, 0)
+        let shroomLights = Array(scene.lights.suffix(3))
+        XCTAssertEqual(scene.lights.count, 6)
+        for light in shroomLights {
+            XCTAssertEqual(light.colorIntensity.w, 10, accuracy: 0.0001)
+            XCTAssertGreaterThan(light.colorIntensity.y, light.colorIntensity.x)
+            XCTAssertGreaterThan(light.colorIntensity.z, light.colorIntensity.x)
+            XCTAssertTrue(clusters.contains { cluster in
+                abs(cluster.positionScale.x - light.positionRadius.x) < 0.001
+                    && abs(cluster.positionScale.z - light.positionRadius.z) < 0.001
+            })
         }
     }
 
@@ -73,12 +108,13 @@ final class SceneDataTests: XCTestCase {
 
         for (index, expectedPosition) in expectedCreaturePositions.enumerated() {
             let creature = creatures[index]
-            let light = scene.lights[index]
 
             XCTAssertEqual(creature.positionScale.x, expectedPosition.x, accuracy: 0.0001)
             XCTAssertEqual(creature.positionScale.z, expectedPosition.y, accuracy: 0.0001)
             XCTAssertEqual(creature.positionScale.w, 3, accuracy: 0.0001)
             XCTAssertEqual(creature.parameters.x, 12, accuracy: 0.0001)
+            guard index < 3 else { continue }
+            let light = scene.lights[index]
             XCTAssertEqual(light.positionRadius.x, creature.positionScale.x, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.y - creature.positionScale.y, 6.3, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.z, creature.positionScale.z, accuracy: 0.0001)

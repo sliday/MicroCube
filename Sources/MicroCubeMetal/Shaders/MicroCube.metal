@@ -606,9 +606,17 @@ kernel void raycastHybrid(
         }
         if (hit.primitiveKind == 0u) {
             color = color * mix(0.62f, 1.38f, structure) + (structure - 0.5f) * 0.016f;
-        }
-        if (hit.primitiveKind != 0u) {
-            color += materials[materialIndex].emissionMetalness.xyz;
+            float3 pool = float3(0.0f);
+            for (uint index = 0u; index < min(scene.counts.z, lightsEnabled ? 6u : 0u); ++index) {
+                Light poolSource = lights[index];
+                Light poolLight = animateLight(poolSource, index, uniforms.cameraPositionAndTime.w);
+                float3 delta = poolLight.positionRadius.xyz - point;
+                float horizontal2 = delta.x * delta.x + delta.z * delta.z;
+                float core = exp(-horizontal2 * 0.5f) * saturate(1.0f - abs(delta.y) / 6.0f);
+                pool += poolLight.colorIntensity.xyz * poolLight.colorIntensity.w
+                    * (core * 0.9f + exp(-dot(delta, delta) * 0.06f));
+            }
+            color += pool * 0.032f;
         }
         if (isGlass && opticsEnabled) {
             OpticalPath path;
@@ -704,6 +712,11 @@ kernel void raycastHybrid(
         float fogEnd = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.y;
         float fog = saturate((hit.t - fogStart) / max(0.001f, fogEnd - fogStart));
         color = mix(color, kFogColor, fog);
+        if (hit.primitiveKind != 0u) {
+            color += materials[materialIndex].emissionMetalness.xyz
+                * (0.55f + 0.45f * saturate(hit.normal.y))
+                * (1.0f - 0.4f * fog);
+        }
     } else {
         color = skyColor(direction, sunDirection);
     }
@@ -742,6 +755,23 @@ kernel void raycastHybrid(
             volumeLimit = waterT;
         }
     }
+    bool lightsEnabledForHalo = (options & FEATURE_LIGHTS) != 0u;
+    if (lightsEnabledForHalo && evidenceView == 0u) {
+        float3 halo = float3(0.0f);
+        for (uint index = 0u; index < min(scene.counts.z, 6u); ++index) {
+            Light glowSource = lights[index];
+            Light glowLight = animateLight(glowSource, index, uniforms.cameraPositionAndTime.w);
+            float3 toLight = glowLight.positionRadius.xyz - origin;
+            float along = clamp(dot(toLight, direction), 0.0f, volumeLimit);
+            float3 offset = origin + direction * along - glowLight.positionRadius.xyz;
+            float d2 = dot(offset, offset);
+            float nearFade = saturate(dot(toLight, toLight) / 144.0f);
+            halo += glowLight.colorIntensity.xyz * glowLight.colorIntensity.w
+                * exp(-d2 * 0.22f) * nearFade;
+        }
+        color += halo * 0.016f;
+    }
+
     float transmittance = 1.0f;
     float3 scattering(0.0f);
     for (uint index = 0u; index < min(scene.counts.y, gaussianEnabled ? 48u : 0u); ++index) {
