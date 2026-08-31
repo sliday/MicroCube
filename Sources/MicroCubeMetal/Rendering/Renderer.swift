@@ -301,7 +301,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             )
         case .opticsFixture:
             return try SceneData.build(
-                sdfInstances: hero.sdfInstances.filter { $0.metadata.x == 4 },
+                sdfInstances: [SceneData.makeOpticsProp()],
                 gaussians: [],
                 lights: hero.lights,
                 materials: hero.materials
@@ -315,7 +315,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             )
         case .fractalFixture:
             return try SceneData.build(
-                sdfInstances: hero.sdfInstances.filter { $0.metadata.x == 3 },
+                sdfInstances: [SceneData.makeFractalProp()],
                 gaussians: [],
                 lights: hero.lights,
                 materials: hero.materials
@@ -1014,7 +1014,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let forward = SIMD3<Float>(cosPitch * sinYaw, sinPitch, cosPitch * cosYaw)
         let right = SIMD3<Float>(cosYaw, 0.0, -sinYaw)
         let up = SIMD3<Float>(-sinPitch * sinYaw, cosPitch, -sinPitch * cosYaw)
-        let sun = simd_normalize(SIMD3<Float>(0.42, 0.82, 0.38))
+        let sun = simd_normalize(SIMD3<Float>(-0.30, 0.16, -0.72))
         let aspect = Float(width) / Float(max(1, height))
         let halfFOV = tan(Float(70.0 * .pi / 360.0))
 
@@ -1028,9 +1028,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             cameraForwardAndFOV: SIMD4<Float>(forward.x, forward.y, forward.z, halfFOV),
             cameraRightAndAspect: SIMD4<Float>(right.x, right.y, right.z, aspect),
             cameraUpAndMaxDistance: SIMD4<Float>(up.x, up.y, up.z, 256.0),
-            sunDirectionAndAmbient: SIMD4<Float>(sun.x, sun.y, sun.z, 0.24),
+            sunDirectionAndAmbient: SIMD4<Float>(sun.x, sun.y, sun.z, 0.26),
             viewportAndOptions: SIMD4<UInt32>(UInt32(width), UInt32(height), frameIndex, options),
-            fogAndExposure: SIMD4<Float>(0.83, 1.0, 0.82, Float(scaleController.scale))
+            fogAndExposure: SIMD4<Float>(0.09, 0.85, 0.85, Float(scaleController.scale))
         )
     }
 

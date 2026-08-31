@@ -10,82 +10,64 @@ constant uint RENDER_OPTIONS_VALID = 1u << 31u;
 
 constant float3 kPalette[43] = {
     float3(0.000000f, 0.000000f, 0.000000f),
-    float3(0.294118f, 0.345098f, 0.290196f),
-    float3(0.341176f, 0.400000f, 0.337255f),
-    float3(0.388235f, 0.454902f, 0.384314f),
-    float3(0.250980f, 0.364706f, 0.219608f),
-    float3(0.294118f, 0.427451f, 0.254902f),
-    float3(0.333333f, 0.486275f, 0.294118f),
-    float3(0.333333f, 0.388235f, 0.301961f),
-    float3(0.388235f, 0.450980f, 0.352941f),
-    float3(0.443137f, 0.513725f, 0.400000f),
-    float3(0.333333f, 0.411765f, 0.254902f),
-    float3(0.384314f, 0.478431f, 0.294118f),
-    float3(0.439216f, 0.545098f, 0.337255f),
-    float3(0.388235f, 0.435294f, 0.313725f),
-    float3(0.454902f, 0.505882f, 0.364706f),
-    float3(0.517647f, 0.576471f, 0.415686f),
-    float3(0.419608f, 0.454902f, 0.294118f),
-    float3(0.490196f, 0.529412f, 0.345098f),
-    float3(0.556863f, 0.603922f, 0.392157f),
-    float3(0.466667f, 0.478431f, 0.321569f),
-    float3(0.541176f, 0.556863f, 0.372549f),
-    float3(0.615686f, 0.635294f, 0.427451f),
-    float3(0.501961f, 0.494118f, 0.345098f),
-    float3(0.584314f, 0.572549f, 0.403922f),
-    float3(0.666667f, 0.654902f, 0.458824f),
-    float3(0.525490f, 0.486275f, 0.333333f),
-    float3(0.607843f, 0.568627f, 0.384314f),
-    float3(0.694118f, 0.647059f, 0.439216f),
-    float3(0.545098f, 0.501961f, 0.407843f),
-    float3(0.635294f, 0.584314f, 0.474510f),
-    float3(0.725490f, 0.662745f, 0.541176f),
-    float3(0.568627f, 0.466667f, 0.345098f),
-    float3(0.662745f, 0.541176f, 0.403922f),
-    float3(0.752941f, 0.615686f, 0.458824f),
-    float3(0.592157f, 0.521569f, 0.474510f),
-    float3(0.686275f, 0.607843f, 0.552941f),
-    float3(0.784314f, 0.690196f, 0.631373f),
-    float3(0.615686f, 0.431373f, 0.368627f),
-    float3(0.713725f, 0.501961f, 0.427451f),
-    float3(0.815686f, 0.572549f, 0.490196f),
-    float3(0.635294f, 0.533333f, 0.517647f),
-    float3(0.741176f, 0.619608f, 0.603922f),
-    float3(0.843137f, 0.705882f, 0.686275f)
+    float3(0.034020f, 0.034020f, 0.031500f),
+    float3(0.040320f, 0.039816f, 0.036792f),
+    float3(0.046620f, 0.045864f, 0.042336f),
+    float3(0.050400f, 0.049140f, 0.045360f),
+    float3(0.059220f, 0.057456f, 0.052920f),
+    float3(0.068040f, 0.066024f, 0.060984f),
+    float3(0.075600f, 0.072576f, 0.066024f),
+    float3(0.086940f, 0.083664f, 0.076104f),
+    float3(0.098280f, 0.094500f, 0.086184f),
+    float3(0.090720f, 0.088200f, 0.075600f),
+    float3(0.103320f, 0.100296f, 0.086184f),
+    float3(0.115920f, 0.112392f, 0.097020f),
+    float3(0.059220f, 0.052920f, 0.042840f),
+    float3(0.068040f, 0.060984f, 0.049392f),
+    float3(0.076860f, 0.069048f, 0.055944f),
+    float3(0.064260f, 0.075600f, 0.055440f),
+    float3(0.073080f, 0.085680f, 0.063000f),
+    float3(0.081900f, 0.095760f, 0.070560f),
+    float3(0.075600f, 0.084420f, 0.059220f),
+    float3(0.085680f, 0.095760f, 0.067284f),
+    float3(0.095760f, 0.107100f, 0.075600f),
+    float3(0.078120f, 0.083160f, 0.070560f),
+    float3(0.088200f, 0.093744f, 0.079632f),
+    float3(0.098280f, 0.104580f, 0.088704f),
+    float3(0.083160f, 0.075600f, 0.080640f),
+    float3(0.093744f, 0.085680f, 0.091224f),
+    float3(0.104580f, 0.095760f, 0.102060f),
+    float3(0.086940f, 0.090720f, 0.078120f),
+    float3(0.098280f, 0.102312f, 0.088200f),
+    float3(0.109620f, 0.113904f, 0.098280f),
+    float3(0.090720f, 0.094500f, 0.088200f),
+    float3(0.102060f, 0.105840f, 0.099036f),
+    float3(0.113400f, 0.117432f, 0.109872f),
+    float3(0.085680f, 0.088200f, 0.086940f),
+    float3(0.095760f, 0.098280f, 0.097020f),
+    float3(0.105840f, 0.108360f, 0.107100f),
+    float3(0.093240f, 0.095760f, 0.094500f),
+    float3(0.104580f, 0.107100f, 0.105840f),
+    float3(0.115920f, 0.118440f, 0.117180f),
+    float3(0.103320f, 0.105084f, 0.103320f),
+    float3(0.114660f, 0.116424f, 0.114660f),
+    float3(0.126000f, 0.128016f, 0.126000f)
 };
 
-inline float hash2(int x, int z, int seed) {
-    uint h = uint(x) * 374761393u + uint(z) * 668265263u + uint(seed) * 1274126177u;
-    h = (h ^ (h >> 13u)) * 1274126177u;
-    h ^= h >> 16u;
-    return float(h) * (1.0f / 4294967296.0f);
-}
-
-inline float valueNoise(float x, float z, int seed) {
-    int ix = int(floor(x));
-    int iz = int(floor(z));
-    float2 f = float2(x - float(ix), z - float(iz));
-    float2 u = f * f * (3.0f - 2.0f * f);
-    float a = hash2(ix, iz, seed);
-    float b = hash2(ix + 1, iz, seed);
-    float c = hash2(ix, iz + 1, seed);
-    float d = hash2(ix + 1, iz + 1, seed);
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-
-inline float noise3D(float x, float y, float z, int seed) {
-    int iy = int(floor(y));
-    float f = y - float(iy);
-    float u = f * f * (3.0f - 2.0f * f);
-    return mix(valueNoise(x, z, seed + iy * 37), valueNoise(x, z, seed + (iy + 1) * 37), u);
-}
+constant float kSeaLevel = 52.0f;
 
 inline float terrainHeight(float wx, float wz) {
     float n = valueNoise(wx / 48.0f, wz / 48.0f, 7) * 0.55f
         + valueNoise(wx / 20.0f, wz / 20.0f, 8) * 0.30f
         + valueNoise(wx / 8.0f, wz / 8.0f, 9) * 0.15f;
     float ridge = 1.0f - abs(valueNoise(wx / 88.0f, wz / 88.0f, 10) * 2.0f - 1.0f);
-    return round(72.0f + (n - 0.5f) * 64.0f + ridge * ridge * 25.6f);
+    float land = 72.0f + (n - 0.5f) * 64.0f + ridge * ridge * 25.6f;
+    float coast = valueNoise(wx / 56.0f, wz / 56.0f, 12) * 40.0f;
+    float radius = length(float2(wx - 16.0f, wz - 28.0f));
+    float shore = saturate((150.0f + coast - radius) / 72.0f);
+    shore = shore * shore * (3.0f - 2.0f * shore);
+    float seabed = 30.0f + (n - 0.5f) * 12.0f;
+    return round(mix(seabed, land, shore));
 }
 
 inline float islandDensity(float wx, float y, float wz) {
@@ -117,8 +99,6 @@ kernel void generateTerrain(texture3d<uint, access::write> volume [[texture(0)]]
     int wx = int(gid.x) - 256;
     int wz = int(gid.y) - 256;
     int height = clamp(int(terrainHeight(float(wx), float(wz))), 0, 512);
-    int bx = int(floor(float(wx) / 2.0f));
-    int bz = int(floor(float(wz) / 2.0f));
 
     for (uint blockY = 0u; blockY < kWorldSize; blockY += 4u) {
         for (uint lane = 0u; lane < 4u; ++lane) {
@@ -127,16 +107,12 @@ kernel void generateTerrain(texture3d<uint, access::write> volume [[texture(0)]]
             float cave = belowGround
                 ? abs(noise3D(float(wx) / 36.0f, float(y) / 36.0f, float(wz) / 36.0f, 41) - 0.5f)
                 : 1.0f;
-            float island = belowGround ? 0.0f : islandDensity(float(wx), float(y), float(wz));
-            bool islandTop = !belowGround && island > 0.7f
-                && islandDensity(float(wx), float(y + 1u), float(wz)) <= 0.7f;
             bool solid = belowGround
-                ? !(cave < 0.045f && (int(y) < height - 8 || cave < 0.01575f))
-                : island > 0.7f;
+                && !(cave < 0.045f && (int(y) < height - 8 || cave < 0.01575f));
             uint material = 0u;
 
             if (solid) {
-                int depthVoxels = belowGround ? height - 1 - int(y) : (islandTop ? 0 : 2);
+                int depthVoxels = height - 1 - int(y);
                 float level = (float(height) - 40.0f) / 64.0f
                     + (valueNoise(float(wx) / 24.0f, float(wz) / 24.0f, 31) - 0.5f) * 0.28f;
                 float band = valueNoise(float(wx) / 160.0f, float(wz) / 160.0f, 21) * 6.0f
@@ -144,10 +120,9 @@ kernel void generateTerrain(texture3d<uint, access::write> volume [[texture(0)]]
                 int surfaceBand = clamp(int(level * 14.0f), 0, 13);
                 int materialBand = depthVoxels == 0 ? surfaceBand
                     : (depthVoxels == 1 ? max(0, surfaceBand - 1) : ((int(floor(band)) % 14) + 14) % 14);
-                int by = int(y) / 2;
-                uint shade = min(2u, uint(hash2(bx * 7 + by, bz * 13 + by, 5) * 3.0f));
+                uint shade = min(2u, uint(hash2(wx * 7 + int(y), wz * 13 + int(y), 5) * 3.0f));
                 material = 1u + uint(materialBand) * 3u + shade;
-                if (hash2(wx * 3, wz * 5, int(y)) > 0.82f) {
+                if (hash2(wx * 3, wz * 5, int(y)) > 0.70f) {
                     material = 1u + uint(materialBand) * 3u + ((shade + 1u) % 3u);
                 }
             }
@@ -271,7 +246,7 @@ kernel void injectVolumeLighting(
             point, sunDirection, 0.05f, 192.0f, gaussians, scene.counts.y
         );
     }
-    float3 radiance = float3(0.10f) + float3(1.0f, 0.93f, 0.78f) * sunVisibility * 0.72f;
+    float3 radiance = float3(0.085f, 0.095f, 0.115f) + float3(0.92f, 0.84f, 0.76f) * sunVisibility * 0.72f;
 
     uint strongestIndex = 0u;
     float strongestScore = -1.0f;
@@ -504,7 +479,7 @@ kernel void raycastHybrid(
                 );
             }
             if (shadowsEnabled && surfaceExactShadow) {
-                lighting *= 0.45f;
+                lighting *= 0.22f;
             }
         }
 
@@ -513,9 +488,36 @@ kernel void raycastHybrid(
         float3 baseColor = hit.primitiveKind == 0u
             ? kPalette[min(hit.material, 42u)]
             : materials[materialIndex].baseColorRoughness.xyz;
+        if (hit.primitiveKind == 0u) {
+            float patch = noise3D(point.x * 0.6f, point.y * 0.6f, point.z * 0.6f, 89);
+            float fine = noise3D(point.x * 1.9f, point.y * 1.9f, point.z * 1.9f, 83);
+            float speckle = hash2(
+                int(floor(point.x * 3.0f)) * 131 + int(floor(point.y * 3.0f)),
+                int(floor(point.z * 3.0f)), 97
+            );
+            float breakup = patch * 0.62f + fine * 0.28f + speckle * 0.10f;
+            breakup = breakup * breakup * (3.0f - 2.0f * breakup);
+            baseColor *= 0.35f + breakup * 1.55f;
+            float mossBand = saturate(1.0f - abs(point.y - 74.0f) / 26.0f);
+            float moss = saturate((patch - 0.58f) / 0.14f) * saturate(hit.normal.y) * mossBand;
+            baseColor = mix(baseColor, baseColor * float3(0.55f, 1.35f, 0.45f), moss);
+            float rockiness = saturate((point.y - 88.0f) / 18.0f) * (1.0f - saturate(hit.normal.y));
+            float3 grey = float3(dot(baseColor, float3(0.3333f)));
+            baseColor = mix(baseColor, grey * (0.70f + fine * 0.55f), rockiness * saturate((0.40f - patch) / 0.25f));
+            float wet = saturate((kSeaLevel + 3.5f - point.y) / 3.5f);
+            baseColor = mix(baseColor, baseColor * float3(0.30f, 0.36f, 0.44f), wet * 0.9f);
+            float2 faceFrac = hit.normal.x != 0.0f ? fract(point.yz)
+                : (hit.normal.y != 0.0f ? fract(point.xz) : fract(point.xy));
+            float edgeDistance = min(
+                min(faceFrac.x, 1.0f - faceFrac.x),
+                min(faceFrac.y, 1.0f - faceFrac.y)
+            );
+            baseColor *= 0.62f + 0.38f * saturate(edgeDistance / 0.11f);
+        }
         bool isReflective = !isGlass && hit.primitiveKind != 0u
             && materials[materialIndex].emissionMetalness.w > 0.0f;
-        color = baseColor * lighting;
+        color = baseColor * lighting
+            * mix(float3(0.84f, 0.90f, 1.10f), float3(1.14f, 0.97f, 0.84f), saturate(diffuse * 2.5f));
         uint selectedMask = 0u;
         for (uint selection = 0u;
              selection < min(scene.counts.z, lightsEnabled && !isGlass ? 4u : 0u);
@@ -653,12 +655,43 @@ kernel void raycastHybrid(
         float fogStart = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.x;
         float fogEnd = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.y;
         float fog = saturate((hit.t - fogStart) / max(0.001f, fogEnd - fogStart));
-        color = mix(color, float3(150.0f, 170.0f, 195.0f) / 255.0f, fog);
+        color = mix(color, kFogColor, fog);
     } else {
         color = skyColor(direction, sunDirection);
     }
 
     float volumeLimit = hasHit ? hit.t : uniforms.cameraUpAndMaxDistance.w;
+    if (origin.y > kSeaLevel && direction.y < -1.0e-4f) {
+        float waterT = (origin.y - kSeaLevel) / -direction.y;
+        if (waterT < volumeLimit) {
+            float3 waterPoint = origin + direction * waterT;
+            float waveTime = uniforms.cameraPositionAndTime.w;
+            float ripple = valueNoise(waterPoint.x * 0.22f + waveTime * 0.5f, waterPoint.z * 0.22f, 61)
+                - valueNoise(waterPoint.x * 0.22f - 5.3f, waterPoint.z * 0.22f + waveTime * 0.4f, 62);
+            float3 waterNormal = normalize(float3(ripple * 0.10f, 1.0f, ripple * 0.08f));
+            float3 reflected = reflect(direction, waterNormal);
+            reflected.y = abs(reflected.y);
+            float3 reflection = skyColor(reflected, sunDirection);
+            float facing = saturate(-dot(direction, waterNormal));
+            float grazing = 1.0f - facing;
+            float grazing2 = grazing * grazing;
+            float fresnel = 0.04f + 0.96f * grazing2 * grazing2 * grazing;
+            float3 waterColor = mix(float3(0.052f, 0.078f, 0.082f), reflection, saturate(fresnel + 0.30f));
+            if (hasHit) {
+                float clarity = exp(-(hit.t - waterT) * 0.28f);
+                waterColor = mix(waterColor, color * float3(0.42f, 0.55f, 0.53f), clarity * 0.5f);
+            }
+            float glintDot = max(dot(reflected, sunDirection), 0.0f);
+            float glint4 = glintDot * glintDot * glintDot * glintDot;
+            float glint = glint4 * glint4 * glint4 * glint4 * glint4 * glint4 * glint4 * glint4;
+            waterColor += float3(0.18f, 0.19f, 0.18f) * glint;
+            float fogStart = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.x;
+            float fogEnd = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.y;
+            float waterFog = saturate((waterT - fogStart) / max(0.001f, fogEnd - fogStart));
+            color = mix(waterColor, kFogColor, waterFog);
+            volumeLimit = waterT;
+        }
+    }
     float transmittance = 1.0f;
     float3 scattering(0.0f);
     for (uint index = 0u; index < min(scene.counts.y, gaussianEnabled ? 48u : 0u); ++index) {

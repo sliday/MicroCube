@@ -130,8 +130,7 @@ final class SDFProbeTests: XCTestCase {
         """
         let (device, library) = try MetalProbeHarness.makeLibrary(extraSource: source)
         let pipeline = try MetalProbeHarness.makePipeline(name: "probeFractalCoverage", library: library, device: device)
-        let sceneData = try SceneData.makeHero()
-        let fractal = try XCTUnwrap(sceneData.sdfInstances.first { $0.metadata.x == 3 })
+        let fractal = SceneData.makeFractalProp()
         var instance = fractal
         let instances = try XCTUnwrap(device.makeBuffer(
             bytes: &instance,

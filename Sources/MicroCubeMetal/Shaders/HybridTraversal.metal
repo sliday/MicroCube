@@ -849,21 +849,35 @@ inline float voxelAO(texture3d<uint, access::read> volume, float3 point, float3 
     float ao01 = vertexAO(sideANegative, sideBPositive, occupancy(volume, base - tangentA + tangentB));
     float ao11 = vertexAO(sideAPositive, sideBPositive, occupancy(volume, base + tangentA + tangentB));
     float ao = mix(mix(ao00, ao10, fraction.x), mix(ao01, ao11, fraction.x), fraction.y) / 3.0f;
-    return mix(0.4f, 1.0f, ao);
+    return mix(0.12f, 1.0f, ao);
 }
 
+constant float3 kFogColor = float3(0.545f, 0.585f, 0.645f);
+
 inline float3 skyColor(float3 direction, float3 sunDirection) {
-    constexpr float3 skyTop = float3(92.0f, 132.0f, 196.0f) / 255.0f;
-    constexpr float3 skyHorizon = float3(186.0f, 206.0f, 226.0f) / 255.0f;
-    constexpr float3 fogColor = float3(150.0f, 170.0f, 195.0f) / 255.0f;
-    constexpr float3 sunColor = float3(255.0f, 246.0f, 214.0f) / 255.0f;
-    float height = saturate(direction.y * 1.6f + 0.15f);
-    float3 color = mix(skyHorizon, skyTop, height);
-    color = mix(color, fogColor, saturate(1.0f - abs(direction.y) * 6.0f));
+    constexpr float3 skyTop = float3(0.30f, 0.35f, 0.43f);
+    constexpr float3 skyHorizon = float3(0.54f, 0.585f, 0.645f);
+    constexpr float3 cloudDark = float3(0.335f, 0.365f, 0.42f);
+    constexpr float3 cloudBright = float3(0.72f, 0.71f, 0.70f);
+    constexpr float3 sunWarm = float3(1.05f, 0.68f, 0.48f);
+    constexpr float3 warmBleed = float3(1.10f, 0.94f, 0.82f);
+    float height = saturate(direction.y * 1.35f + 0.12f);
+    float3 color = mix(skyHorizon, skyTop, height * height);
+    float2 uv = direction.xz / max(direction.y, 0.06f);
+    float clouds = valueNoise(uv.x * 1.7f, uv.y * 1.7f, 71) * 0.6f
+        + valueNoise(uv.x * 4.3f, uv.y * 4.3f, 72) * 0.4f;
+    float breakMask = saturate((clouds - 0.44f) / 0.30f);
+    float3 deck = mix(cloudDark, cloudBright, breakMask);
     float sunDot = dot(direction, sunDirection);
-    float glow = saturate((sunDot - 0.96f) / 0.04f);
-    glow *= glow;
-    glow *= glow;
-    float sunlight = saturate((sunDot > 0.9985f ? 1.0f : 0.0f) + glow);
-    return mix(color, sunColor, sunlight);
+    float wide = saturate((sunDot - 0.45f) / 0.55f);
+    wide *= wide;
+    deck *= mix(float3(1.0f), warmBleed, wide * (0.35f + 0.65f * breakMask));
+    float window = saturate((sunDot - 0.84f) / 0.16f);
+    window *= window;
+    deck = mix(deck, sunWarm, window * (0.40f + 0.60f * breakMask));
+    float deckAmount = saturate(direction.y * 5.0f);
+    color = mix(color, deck, deckAmount * 0.85f);
+    float3 haze = mix(kFogColor, sunWarm, wide * 0.35f);
+    color = mix(color, haze, saturate(1.0f - abs(direction.y) * 3.0f));
+    return color;
 }

@@ -48,7 +48,7 @@ final class SceneDataTests: XCTestCase {
             XCTAssertLessThanOrEqual(light.positionRadius.y - creature.positionScale.y, 7.5)
             XCTAssertGreaterThanOrEqual(light.positionRadius.w, 20)
             XCTAssertLessThanOrEqual(light.positionRadius.w, 28)
-            XCTAssertGreaterThanOrEqual(light.colorIntensity.w, 14)
+            XCTAssertEqual(light.colorIntensity.w, 6, accuracy: 0.0001)
         }
     }
 
@@ -57,12 +57,12 @@ final class SceneDataTests: XCTestCase {
         let anchor = SIMD3<Float>(288, 102, 302)
         let scale: Float = 1.5
         let expectedCreaturePositions = [
-            SIMD2<Float>(261, 287),
-            SIMD2<Float>(277.5, 299),
-            SIMD2<Float>(295.5, 290),
-            SIMD2<Float>(261, 321.5),
-            SIMD2<Float>(286.5, 323),
-            SIMD2<Float>(304.5, 311)
+            SIMD2<Float>(262.5, 297.5),
+            SIMD2<Float>(287.25, 290),
+            SIMD2<Float>(264, 315.5),
+            SIMD2<Float>(288, 311),
+            SIMD2<Float>(310.5, 293.75),
+            SIMD2<Float>(283.5, 329.75)
         ]
         let creatures = scene.sdfInstances.filter { $0.metadata.x == 1 }
 
@@ -96,8 +96,7 @@ final class SceneDataTests: XCTestCase {
     }
 
     func testHeroFractalRestoresAcceptedCenterWithReducedConservativeBounds() throws {
-        let scene = try SceneData.makeHero()
-        let fractal = try XCTUnwrap(scene.sdfInstances.first { $0.metadata.x == 3 })
+        let fractal = SceneData.makeFractalProp()
 
         XCTAssertEqual(
             SIMD3<Float>(fractal.positionScale.x, fractal.positionScale.y, fractal.positionScale.z),
@@ -118,9 +117,8 @@ final class SceneDataTests: XCTestCase {
         let scene = try SceneData.makeHero()
         let anchor = SIMD3<Float>(288, 102, 302)
         let scale: Float = 1.5
-        let expectedSDFs: [(UInt32, SIMD3<Float>, Float, SIMD3<Float>, SIMD3<Float>)] = [
-            (0, SIMD3<Float>(277.5, 96, 288.5), 10.5, SIMD3<Float>(267, 81, 278), SIMD3<Float>(288, 111, 299)),
-            (4, SIMD3<Float>(286.5, 115.5, 306.5), 7.5, SIMD3<Float>(279, 108, 299), SIMD3<Float>(294, 123, 314))
+        let expectedSDFs: [(SDFInstance, SIMD3<Float>, Float, SIMD3<Float>, SIMD3<Float>)] = [
+            (SceneData.makeOpticsProp(), SIMD3<Float>(286.5, 115.5, 306.5), 7.5, SIMD3<Float>(279, 108, 299), SIMD3<Float>(294, 123, 314))
         ]
         let originalCamera = SIMD3<Float>(256.5, 112, 256.5)
         let dollyCamera = anchor + (originalCamera - anchor) * scale
@@ -135,8 +133,7 @@ final class SceneDataTests: XCTestCase {
         XCTAssertEqual(heroProjectionRatio, 1, accuracy: 0.0001)
         XCTAssertLessThanOrEqual(abs(heroProjectionRatio - 1), 0.1)
 
-        for (kind, center, radius, minimum, maximum) in expectedSDFs {
-            let instance = try XCTUnwrap(scene.sdfInstances.first { $0.metadata.x == kind })
+        for (instance, center, radius, minimum, maximum) in expectedSDFs {
             XCTAssertEqual(instance.positionScale.x, center.x, accuracy: 0.0001)
             XCTAssertEqual(instance.positionScale.y, center.y, accuracy: 0.0001)
             XCTAssertEqual(instance.positionScale.z, center.z, accuracy: 0.0001)
@@ -205,7 +202,7 @@ final class SceneDataTests: XCTestCase {
             library: library,
             device: device
         )
-        let expectedTerrainHeights: [Float] = [87, 88, 93, 88, 86, 101]
+        let expectedTerrainHeights: [Float] = [83, 94, 81, 87, 92, 84]
         let positions = creatures.map { SIMD2<Float>($0.positionScale.x, $0.positionScale.z) }
         let positionBuffer = try positions.withUnsafeBytes { bytes in
             try XCTUnwrap(device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared))
