@@ -1,3 +1,15 @@
 .build/
-dist/
 .DS_Store
+
+# Local code-index artifact (1.7M binary, regenerated on demand)
+codedb.snapshot
+
+# Build output is local, but the gauntlet run's text record is kept.
+# Renders (dist/gauntlet/captures, 112M) and the Dear Esther reference
+# frames (dist/gauntlet/bar, third-party screenshots) stay out.
+dist/*
+!dist/gauntlet/
+dist/gauntlet/*
+!dist/gauntlet/workbench.md
+!dist/gauntlet/poses.md
+!dist/gauntlet/*.json
