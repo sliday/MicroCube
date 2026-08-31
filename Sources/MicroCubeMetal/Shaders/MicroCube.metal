@@ -457,7 +457,68 @@ kernel void raycastHybrid(
     if (hasHit) {
         float3 point = origin + direction * hit.t;
         bool isGlass = opticsEnabled && hit.primitiveKind == 2u;
-        float diffuse = max(0.0f, dot(hit.normal, sunDirection));
+        // W4 R1: distance-blended smooth shading. Near terrain swaps its
+        // axis-aligned face normal for the trilinear occupancy-field
+        // gradient (continuous across the face, so steps shade as rounded
+        // shoulders — pure per-voxel central differences would stay
+        // constant per face) plus a bump aligned with the grain field the
+        // albedo already samples. Shading only: AO, shadow-ray offsets,
+        // the voxel-space material logic, and the normals evidence view
+        // all keep the geometric normal, and the blend reaches zero by 40
+        // units so distant ridges keep the crisp faceting.
+        float3 shadingNormal = hit.normal;
+        float nearWeight = hit.primitiveKind == 0u
+            ? 1.0f - smoothstep(14.0f, 40.0f, hit.t)
+            : 0.0f;
+        if (nearWeight > 0.003f) {
+            int3 cellBase = int3(floor(point - 0.5f));
+            float3 cellFrac = point - 0.5f - float3(cellBase);
+            float corner[2][2][2];
+            for (int cx = 0; cx < 2; ++cx) {
+                for (int cy = 0; cy < 2; ++cy) {
+                    for (int cz = 0; cz < 2; ++cz) {
+                        corner[cx][cy][cz] = float(occupancy(volume, cellBase + int3(cx, cy, cz)));
+                    }
+                }
+            }
+            float3 w0 = 1.0f - cellFrac;
+            float3 gradient;
+            gradient.x = (corner[1][0][0] - corner[0][0][0]) * w0.y * w0.z
+                + (corner[1][1][0] - corner[0][1][0]) * cellFrac.y * w0.z
+                + (corner[1][0][1] - corner[0][0][1]) * w0.y * cellFrac.z
+                + (corner[1][1][1] - corner[0][1][1]) * cellFrac.y * cellFrac.z;
+            gradient.y = (corner[0][1][0] - corner[0][0][0]) * w0.x * w0.z
+                + (corner[1][1][0] - corner[1][0][0]) * cellFrac.x * w0.z
+                + (corner[0][1][1] - corner[0][0][1]) * w0.x * cellFrac.z
+                + (corner[1][1][1] - corner[1][0][1]) * cellFrac.x * cellFrac.z;
+            gradient.z = (corner[0][0][1] - corner[0][0][0]) * w0.x * w0.y
+                + (corner[1][0][1] - corner[1][0][0]) * cellFrac.x * w0.y
+                + (corner[0][1][1] - corner[0][1][0]) * w0.x * cellFrac.y
+                + (corner[1][1][1] - corner[1][1][0]) * cellFrac.x * cellFrac.y;
+            float gradientLength = length(gradient);
+            float3 smoothNormal = gradientLength > 0.05f
+                ? -gradient / gradientLength
+                : hit.normal;
+            if (dot(smoothNormal, hit.normal) < 0.1f) {
+                smoothNormal = hit.normal;
+            }
+            float3 tangentA = normalize(cross(
+                smoothNormal,
+                abs(smoothNormal.y) < 0.9f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f)
+            ));
+            float3 tangentB = cross(smoothNormal, tangentA);
+            bool bumpTopFace = hit.normal.y > 0.5f;
+            float3 bumpP1 = point + tangentA * 0.06f;
+            float3 bumpP2 = point + tangentB * 0.06f;
+            float bumpH0 = noise3D(point.x * 9.0f, (bumpTopFace ? 0.0f : point.y) * 9.0f, point.z * 9.0f, 79);
+            float bumpH1 = noise3D(bumpP1.x * 9.0f, (bumpTopFace ? 0.0f : bumpP1.y) * 9.0f, bumpP1.z * 9.0f, 79);
+            float bumpH2 = noise3D(bumpP2.x * 9.0f, (bumpTopFace ? 0.0f : bumpP2.y) * 9.0f, bumpP2.z * 9.0f, 79);
+            smoothNormal = normalize(
+                smoothNormal - (tangentA * (bumpH1 - bumpH0) + tangentB * (bumpH2 - bumpH0)) * 0.9f
+            );
+            shadingNormal = normalize(mix(hit.normal, smoothNormal, nearWeight));
+        }
+        float diffuse = max(0.0f, dot(shadingNormal, sunDirection));
         float lighting = uniforms.sunDirectionAndAmbient.w
             + (1.0f - uniforms.sunDirectionAndAmbient.w) * diffuse;
         lighting *= hit.normal.y > 0.0f ? 1.0f : (hit.normal.y < 0.0f ? 0.62f : (hit.normal.x != 0.0f ? 0.82f : 0.9f));
@@ -633,7 +694,7 @@ kernel void raycastHybrid(
                     visibility *= 0.08f;
                 }
             }
-            float diffuseLocal = max(dot(hit.normal, lightDirection), 0.0f);
+            float diffuseLocal = max(dot(shadingNormal, lightDirection), 0.0f);
             color += baseColor * light.colorIntensity.xyz * light.colorIntensity.w
                 * diffuseLocal * falloff * falloff * visibility * 0.12f;
         }
