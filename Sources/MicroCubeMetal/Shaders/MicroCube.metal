@@ -488,6 +488,7 @@ kernel void raycastHybrid(
         float3 baseColor = hit.primitiveKind == 0u
             ? kPalette[min(hit.material, 42u)]
             : materials[materialIndex].baseColorRoughness.xyz;
+        float structure = 0.5f;
         if (hit.primitiveKind == 0u) {
             float patch = noise3D(point.x * 0.6f, point.y * 0.6f, point.z * 0.6f, 89);
             float fine = noise3D(point.x * 1.9f, point.y * 1.9f, point.z * 1.9f, 83);
@@ -495,15 +496,58 @@ kernel void raycastHybrid(
                 int(floor(point.x * 3.0f)) * 131 + int(floor(point.y * 3.0f)),
                 int(floor(point.z * 3.0f)), 97
             );
+            float grain = noise3D(point.x * 5.5f, point.y * 5.5f, point.z * 5.5f, 79);
             float breakup = patch * 0.62f + fine * 0.28f + speckle * 0.10f;
             breakup = breakup * breakup * (3.0f - 2.0f * breakup);
-            baseColor *= 0.35f + breakup * 1.55f;
-            float mossBand = saturate(1.0f - abs(point.y - 74.0f) / 26.0f);
-            float moss = saturate((patch - 0.58f) / 0.14f) * saturate(hit.normal.y) * mossBand;
-            baseColor = mix(baseColor, baseColor * float3(0.55f, 1.35f, 0.45f), moss);
-            float rockiness = saturate((point.y - 88.0f) / 18.0f) * (1.0f - saturate(hit.normal.y));
-            float3 grey = float3(dot(baseColor, float3(0.3333f)));
-            baseColor = mix(baseColor, grey * (0.70f + fine * 0.55f), rockiness * saturate((0.40f - patch) / 0.25f));
+            baseColor *= 0.62f + breakup * 0.76f;
+            if (hit.normal.y > 0.5f) {
+                float turfNoise = patch * 0.72f + fine * 0.28f;
+                float turfMask = smoothstep(0.46f, 0.52f, turfNoise + (grain - 0.5f) * 0.10f)
+                    * saturate(1.0f - abs(point.y - 74.0f) / 26.0f);
+                float tuft = speckle > 0.86f ? 1.0f : 0.0f;
+                structure = mix(0.28f, 0.72f, turfMask) + tuft * 0.30f + (grain - 0.5f) * 0.12f;
+                baseColor = mix(baseColor, baseColor * float3(0.55f, 1.35f, 0.45f), turfMask);
+                baseColor = mix(baseColor, baseColor * float3(0.95f, 1.10f, 0.72f), tuft * 0.6f);
+            } else if (hit.normal.y < -0.5f) {
+                structure = 0.5f + (grain - 0.5f) * 0.32f;
+            } else {
+                float horiz = hit.normal.x != 0.0f ? point.z : point.x;
+                int column = int(floor(horiz * 1.1f));
+                float columnHash = hash2(column, 0, 113);
+                float columnFrac = fract(horiz * 1.1f);
+                float jointEdge = min(columnFrac, 1.0f - columnFrac);
+                float jointDepth = 0.16f + fract(columnHash * 5.7f) * 0.26f;
+                float jointMask = columnHash > 0.58f ? saturate(1.0f - jointEdge / 0.05f) : 0.0f;
+                float jitter = (fine - 0.5f) * 0.30f + (grain - 0.5f) * 0.18f;
+                float shift = (columnHash - 0.5f) * 0.55f + horiz * 0.07f;
+                float bedA = point.y * 2.6f + shift + jitter * 1.6f;
+                float bedFracA = fract(bedA);
+                float hashA = hash2(int(floor(bedA)), 1, 71);
+                float seamA = hashA > 0.30f
+                    ? (1.0f - saturate(bedFracA / (0.10f + hashA * 0.16f)))
+                        * (0.12f + fract(hashA * 9.7f) * 0.30f)
+                    : 0.0f;
+                float bedB = point.y * 1.1f + shift * 0.7f + jitter;
+                float bedFracB = fract(bedB);
+                float hashB = hash2(int(floor(bedB)), 2, 71);
+                float seamB = hashB > 0.45f
+                    ? (1.0f - saturate(bedFracB / (0.07f + hashB * 0.10f)))
+                        * (0.26f + fract(hashB * 7.3f) * 0.22f)
+                    : 0.0f;
+                float lightBed = fract(hashA * 7.13f) > 0.76f ? 0.20f : 0.0f;
+                float facet = (floor(grain * 4.0f) * 0.3333f - 0.5f) * 0.28f;
+                float wetZone = saturate((kSeaLevel + 9.0f - point.y) / 9.0f);
+                float sparkle = speckle > 0.90f
+                    ? 0.55f * max(wetZone, saturate(seamA * 3.0f))
+                    : 0.0f;
+                structure = saturate(
+                    0.54f + lightBed + facet + sparkle
+                    - seamA - seamB - jointMask * jointDepth
+                );
+                float rockiness = saturate((point.y - 88.0f) / 18.0f);
+                float3 grey = float3(dot(baseColor, float3(0.3333f)));
+                baseColor = mix(baseColor, grey, rockiness * 0.6f);
+            }
             float wet = saturate((kSeaLevel + 3.5f - point.y) / 3.5f);
             baseColor = mix(baseColor, baseColor * float3(0.30f, 0.36f, 0.44f), wet * 0.9f);
             float2 faceFrac = hit.normal.x != 0.0f ? fract(point.yz)
@@ -512,7 +556,8 @@ kernel void raycastHybrid(
                 min(faceFrac.x, 1.0f - faceFrac.x),
                 min(faceFrac.y, 1.0f - faceFrac.y)
             );
-            baseColor *= 0.62f + 0.38f * saturate(edgeDistance / 0.11f);
+            float crackFloor = hit.normal.y > 0.5f ? 0.82f : 0.50f + speckle * 0.22f;
+            baseColor *= crackFloor + (1.0f - crackFloor) * saturate(edgeDistance / 0.11f);
         }
         bool isReflective = !isGlass && hit.primitiveKind != 0u
             && materials[materialIndex].emissionMetalness.w > 0.0f;
@@ -558,6 +603,9 @@ kernel void raycastHybrid(
             float diffuseLocal = max(dot(hit.normal, lightDirection), 0.0f);
             color += baseColor * light.colorIntensity.xyz * light.colorIntensity.w
                 * diffuseLocal * falloff * falloff * visibility * 0.12f;
+        }
+        if (hit.primitiveKind == 0u) {
+            color = color * mix(0.62f, 1.38f, structure) + (structure - 0.5f) * 0.016f;
         }
         if (hit.primitiveKind != 0u) {
             color += materials[materialIndex].emissionMetalness.xyz;
@@ -666,25 +714,27 @@ kernel void raycastHybrid(
         if (waterT < volumeLimit) {
             float3 waterPoint = origin + direction * waterT;
             float waveTime = uniforms.cameraPositionAndTime.w;
-            float ripple = valueNoise(waterPoint.x * 0.22f + waveTime * 0.5f, waterPoint.z * 0.22f, 61)
-                - valueNoise(waterPoint.x * 0.22f - 5.3f, waterPoint.z * 0.22f + waveTime * 0.4f, 62);
-            float3 waterNormal = normalize(float3(ripple * 0.10f, 1.0f, ripple * 0.08f));
-            float3 reflected = reflect(direction, waterNormal);
-            reflected.y = abs(reflected.y);
-            float3 reflection = skyColor(reflected, sunDirection);
-            float facing = saturate(-dot(direction, waterNormal));
+            float chop = valueNoise(waterPoint.x * 1.7f + waveTime * 0.8f, waterPoint.z * 2.6f, 61);
+            float chopMask = smoothstep(0.55f, 0.78f, chop);
+            float facing = saturate(-direction.y);
             float grazing = 1.0f - facing;
             float grazing2 = grazing * grazing;
-            float fresnel = 0.04f + 0.96f * grazing2 * grazing2 * grazing;
-            float3 waterColor = mix(float3(0.052f, 0.078f, 0.082f), reflection, saturate(fresnel + 0.30f));
+            float fresnel = 0.03f + 0.97f * grazing2 * grazing2 * grazing;
+            float2 flatDir = normalize(float2(direction.x, direction.z));
+            float2 flatSun = normalize(float2(sunDirection.x, sunDirection.z));
+            float lane = saturate(dot(flatDir, flatSun));
+            float lane2 = lane * lane;
+            float lane8 = lane2 * lane2 * lane2 * lane2;
+            constexpr float3 seaDeep = float3(0.030f, 0.042f, 0.050f);
+            constexpr float3 seaReflect = float3(0.300f, 0.330f, 0.375f);
+            constexpr float3 seaGlow = float3(0.62f, 0.46f, 0.34f);
+            float3 reflectTone = mix(seaReflect, seaGlow, lane8 * 0.55f);
+            float3 waterColor = mix(seaDeep, reflectTone, saturate(fresnel * (0.70f + chop * 0.45f)));
+            waterColor += seaGlow * lane8 * chopMask * grazing2 * 0.30f;
             if (hasHit) {
                 float clarity = exp(-(hit.t - waterT) * 0.28f);
                 waterColor = mix(waterColor, color * float3(0.42f, 0.55f, 0.53f), clarity * 0.5f);
             }
-            float glintDot = max(dot(reflected, sunDirection), 0.0f);
-            float glint4 = glintDot * glintDot * glintDot * glintDot;
-            float glint = glint4 * glint4 * glint4 * glint4 * glint4 * glint4 * glint4 * glint4;
-            waterColor += float3(0.18f, 0.19f, 0.18f) * glint;
             float fogStart = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.x;
             float fogEnd = uniforms.cameraUpAndMaxDistance.w * uniforms.fogAndExposure.y;
             float waterFog = saturate((waterT - fogStart) / max(0.001f, fogEnd - fogStart));
