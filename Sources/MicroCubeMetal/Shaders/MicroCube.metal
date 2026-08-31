@@ -467,6 +467,7 @@ kernel void raycastHybrid(
         // all keep the geometric normal, and the blend reaches zero by 40
         // units so distant ridges keep the crisp faceting.
         float3 shadingNormal = hit.normal;
+        float bumpShade = 0.0f;
         float nearWeight = hit.primitiveKind == 0u
             ? 1.0f - smoothstep(14.0f, 40.0f, hit.t)
             : 0.0f;
@@ -502,23 +503,43 @@ kernel void raycastHybrid(
             if (dot(smoothNormal, hit.normal) < 0.1f) {
                 smoothNormal = hit.normal;
             }
+            float preBumpDiffuse = dot(smoothNormal, sunDirection);
             float3 tangentA = normalize(cross(
                 smoothNormal,
                 abs(smoothNormal.y) < 0.9f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f)
             ));
             float3 tangentB = cross(smoothNormal, tangentA);
             bool bumpTopFace = hit.normal.y > 0.5f;
-            float3 bumpP1 = point + tangentA * 0.06f;
-            float3 bumpP2 = point + tangentB * 0.06f;
-            float bumpH0 = noise3D(point.x * 9.0f, (bumpTopFace ? 0.0f : point.y) * 9.0f, point.z * 9.0f, 79);
-            float bumpH1 = noise3D(bumpP1.x * 9.0f, (bumpTopFace ? 0.0f : bumpP1.y) * 9.0f, bumpP1.z * 9.0f, 79);
-            float bumpH2 = noise3D(bumpP2.x * 9.0f, (bumpTopFace ? 0.0f : bumpP2.y) * 9.0f, bumpP2.z * 9.0f, 79);
+            float3 bumpP1 = point + tangentA * 0.007f;
+            float3 bumpP2 = point + tangentB * 0.007f;
+            // Second octave fades in inside 10 units so the very-near cliff
+            // (3-8 units, where the base frequency lands at 2-8 px) still
+            // carries pixel-scale grain.
+            float nearOctave = 0.5f * saturate((7.0f - hit.t) / 4.0f) * (bumpTopFace ? 0.2f : 1.0f);
+            float bumpH0 = noise3D(point.x * 36.0f, (bumpTopFace ? 0.0f : point.y) * 36.0f, point.z * 36.0f, 79)
+                + nearOctave * noise3D(point.x * 90.0f, (bumpTopFace ? 0.0f : point.y) * 90.0f, point.z * 90.0f, 73);
+            float bumpH1 = noise3D(bumpP1.x * 36.0f, (bumpTopFace ? 0.0f : bumpP1.y) * 36.0f, bumpP1.z * 36.0f, 79)
+                + nearOctave * noise3D(bumpP1.x * 90.0f, (bumpTopFace ? 0.0f : bumpP1.y) * 90.0f, bumpP1.z * 90.0f, 73);
+            float bumpH2 = noise3D(bumpP2.x * 36.0f, (bumpTopFace ? 0.0f : bumpP2.y) * 36.0f, bumpP2.z * 36.0f, 79)
+                + nearOctave * noise3D(bumpP2.x * 90.0f, (bumpTopFace ? 0.0f : bumpP2.y) * 90.0f, bumpP2.z * 90.0f, 73);
             smoothNormal = normalize(
-                smoothNormal - (tangentA * (bumpH1 - bumpH0) + tangentB * (bumpH2 - bumpH0)) * 0.9f
+                smoothNormal - (tangentA * (bumpH1 - bumpH0) + tangentB * (bumpH2 - bumpH0)) * 0.7f
             );
             shadingNormal = normalize(mix(hit.normal, smoothNormal, nearWeight));
+            // Hue-neutral relief term: the bump-induced diffuse delta, kept
+            // for a multiplicative + small additive shade so fine relief
+            // survives the dark grade (the multiplicative path alone is
+            // crushed on near-black rock). Scalar, so it cannot re-create
+            // the duotone hue artifacts.
+            bumpShade = (dot(smoothNormal, sunDirection) - preBumpDiffuse) * nearWeight;
         }
+        // Smoothed diffuse drives lighting MAGNITUDE only. The geometric
+        // diffuse keeps two couplings honest: the dusk duotone (whose 2.5x
+        // gain turns a small bump wobble into a large cool-to-warm hue
+        // swing — the W4 R1 "blue pebble" artifact) and the shadow-test
+        // gate (which must not change WHICH pixels get shadow rays).
         float diffuse = max(0.0f, dot(shadingNormal, sunDirection));
+        float geometricDiffuse = max(0.0f, dot(hit.normal, sunDirection));
         float lighting = uniforms.sunDirectionAndAmbient.w
             + (1.0f - uniforms.sunDirectionAndAmbient.w) * diffuse;
         lighting *= hit.normal.y > 0.0f ? 1.0f : (hit.normal.y < 0.0f ? 0.62f : (hit.normal.x != 0.0f ? 0.82f : 0.9f));
@@ -545,7 +566,7 @@ kernel void raycastHybrid(
             lighting *= 1.0f - smoothstep(0.28f, 0.85f, enclosure) * 0.55f;
         }
 
-        if ((shadowsEnabled || evidenceView == 7u) && !isGlass && diffuse > 0.0f) {
+        if ((shadowsEnabled || evidenceView == 7u) && !isGlass && geometricDiffuse > 0.0f) {
             TraceHit exactShadowHit;
             surfaceSunShadows = 1u;
             surfaceExactShadow = traceOcclusionExact(
@@ -600,8 +621,11 @@ kernel void raycastHybrid(
                     * saturate(1.0f - abs(point.y - 74.0f) / 26.0f);
                 float tuft = speckle > 0.86f ? 1.0f : 0.0f;
                 structure = mix(0.28f, 0.72f, turfMask) + tuft * 0.30f + (grain - 0.5f) * 0.12f;
-                baseColor = mix(baseColor, baseColor * float3(0.55f, 1.35f, 0.45f), turfMask);
-                baseColor = mix(baseColor, baseColor * float3(0.95f, 1.10f, 0.72f), tuft * 0.6f);
+                // Coastal moss, not neon: blue raised toward the bar's B/G and the
+                // green peak trimmed (the old 0.45 blue multiplier left
+                // vegetation with mean B of 2/255 after the grade).
+                baseColor = mix(baseColor, baseColor * float3(1.12f, 0.97f, 0.90f), turfMask);
+                baseColor = mix(baseColor, baseColor * float3(0.95f, 1.05f, 0.88f), tuft * 0.6f);
             } else if (hit.normal.y < -0.5f) {
                 structure = 0.5f + (grain - 0.5f) * 0.32f;
             } else {
@@ -656,7 +680,8 @@ kernel void raycastHybrid(
         bool isReflective = !isGlass && hit.primitiveKind != 0u
             && materials[materialIndex].emissionMetalness.w > 0.0f;
         color = baseColor * lighting
-            * mix(float3(0.84f, 0.90f, 1.10f), float3(1.14f, 0.97f, 0.84f), saturate(diffuse * 2.5f));
+            * mix(float3(0.88f, 0.91f, 1.03f), float3(1.09f, 0.98f, 0.90f), saturate(geometricDiffuse * 2.5f));
+        color = color * (1.0f + bumpShade * 0.1f) + bumpShade * 0.026f;
         uint selectedMask = 0u;
         for (uint selection = 0u;
              selection < min(scene.counts.z, lightsEnabled && !isGlass ? 4u : 0u);
@@ -973,7 +998,17 @@ kernel void raycastHybrid(
         // light before the exposure encode; diagnostic views are untouched.
         float3 graded = pow(max(color, float3(0.0f)), float3(1.35f));
         float gradedLuma = dot(graded, float3(0.299f, 0.587f, 0.114f));
-        color = max(float3(0.0f), gradedLuma + (graded - gradedLuma) * 2.2f);
+        float3 boosted = gradedLuma + (graded - gradedLuma) * 2.2f;
+        // Soft floor instead of a hard clamp: a channel driven under the
+        // knee compresses asymptotically toward zero without ever
+        // reaching it, so the saturation boost cannot crush a channel
+        // flat. The knee is small enough not to lift legitimate blacks.
+        const float kSaturationKnee = 0.002f;
+        color = select(
+            boosted,
+            kSaturationKnee * exp((boosted - kSaturationKnee) / kSaturationKnee),
+            boosted < kSaturationKnee
+        );
     }
     if (evidenceView < 5u || evidenceView > 7u) {
         color = pow(saturate(color * uniforms.fogAndExposure.z), float3(1.0f / 2.2f));
