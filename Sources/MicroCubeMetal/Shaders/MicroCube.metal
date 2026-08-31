@@ -800,9 +800,17 @@ kernel void raycastHybrid(
             float along = clamp(dot(toLight, direction), 0.0f, volumeLimit);
             float3 offset = origin + direction * along - glowLight.positionRadius.xyz;
             float d2 = dot(offset, offset);
-            float nearFade = saturate(dot(toLight, toLight) / 400.0f);
+            float lightDistSq = dot(toLight, toLight);
+            float nearFade = saturate(lightDistSq / 400.0f);
+            // Distance-aware halo: the fixed 1.5-unit world radius that keeps
+            // near lights from green-rooming a frame collapses to a point at
+            // range, so the gaussian widens (and gains a little energy) with
+            // light distance — a far beacon keeps a screen-space bloom.
+            float lightDist = sqrt(lightDistSq);
+            float widthScale = 1.0f + lightDist * 0.04f;
             halo += glowLight.colorIntensity.xyz * glowLight.colorIntensity.w
-                * exp(-d2 * 0.45f) * nearFade;
+                * exp(-d2 * 0.45f / (widthScale * widthScale))
+                * nearFade * (1.0f + lightDistSq / 3600.0f);
         }
         color += halo * 0.012f;
     }
@@ -896,6 +904,15 @@ kernel void raycastHybrid(
     }
     if (!active) {
         return;
+    }
+    if (evidenceView == 0u) {
+        // Tonal floor: crush the mids and lows toward the reference band and
+        // re-saturate, so the darkness reads as coloured atmosphere (teal
+        // glow, peach window, slate fog) instead of mud. Applied in linear
+        // light before the exposure encode; diagnostic views are untouched.
+        float3 graded = pow(max(color, float3(0.0f)), float3(1.35f));
+        float gradedLuma = dot(graded, float3(0.299f, 0.587f, 0.114f));
+        color = max(float3(0.0f), gradedLuma + (graded - gradedLuma) * 2.2f);
     }
     if (evidenceView < 5u || evidenceView > 7u) {
         color = pow(saturate(color * uniforms.fogAndExposure.z), float3(1.0f / 2.2f));
