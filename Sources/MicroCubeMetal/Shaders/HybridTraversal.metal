@@ -143,14 +143,13 @@ inline float3 sdfNormal(float3 point,
 inline SDFInstance animateSDFInstance(thread const SDFInstance &source, float time) {
     SDFInstance instance = source;
     if (instance.metadata.x == 1u) {
+        // Creature positions (wander + terrain re-grounding) are animated on
+        // the CPU into the shared instance buffer each frame, so a wandering
+        // figure stays planted on the slope it walked onto. Only the limb
+        // gait phase is derived here.
         float phase = instance.parameters.y + time * 0.78f;
-        instance.positionScale.x += sin(phase) * 2.2f;
-        instance.positionScale.y += abs(sin(phase * 1.7f)) * 0.22f;
-        instance.positionScale.z += cos(phase * 0.73f) * 1.5f;
         instance.parameters.z = sin(phase * 2.0f);
         instance.parameters.w = cos(phase * 2.0f);
-        instance.rotationQuaternion = float4(0.0f, sin(phase * 0.5f) * 0.12f, 0.0f,
-                                              cos(phase * 0.5f) * 0.12f + 0.9928f);
     }
     return instance;
 }

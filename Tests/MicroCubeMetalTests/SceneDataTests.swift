@@ -56,7 +56,7 @@ final class SceneDataTests: XCTestCase {
     func testHeroShroomClustersAreEmissiveTealGroundedAndLit() throws {
         let scene = try SceneData.makeHero()
         let clusters = scene.sdfInstances.filter { $0.metadata.x == 2 }
-        let expectedTerrainHeights: [Float] = [79, 86, 72, 73, 79, 86, 74]
+        let expectedTerrainHeights: [Float] = [79, 86, 72, 73, 79, 86, 104]
 
         XCTAssertEqual(clusters.count, 7)
         for (index, cluster) in clusters.enumerated() {
@@ -268,6 +268,33 @@ final class SceneDataTests: XCTestCase {
                 - creature.positionScale.w * 0.32
             XCTAssertEqual(heights[index], expectedTerrainHeights[index], accuracy: 0.0001)
             XCTAssertEqual(lowerExtent, heights[index], accuracy: 1, "creature \(index) terrain \(heights[index])")
+        }
+    }
+
+    func testCreatureWanderStaysGroundedOnTerrainAtAllSampledTimes() throws {
+        let scene = try SceneData.makeHero()
+        let creatures = scene.sdfInstances.filter { $0.metadata.x == 1 }
+        XCTAssertEqual(creatures.count, 6)
+        for creature in creatures {
+            let footToCenter = creature.parameters.x * 0.5 + creature.positionScale.w * 0.32
+            for step in 0..<25 {
+                let time = Float(step) * 0.4
+                let animated = CreatureAnimation.animatedPositionScale(base: creature, time: time)
+                let ground = TerrainField.smoothHeight(x: animated.x, z: animated.z)
+                let footLine = animated.y - footToCenter
+                XCTAssertGreaterThanOrEqual(footLine - ground, -0.001, "time \(time)")
+                XCTAssertLessThanOrEqual(footLine - ground, 0.25, "time \(time)")
+                XCTAssertLessThanOrEqual(abs(animated.x - creature.positionScale.x), 2.2001)
+                XCTAssertLessThanOrEqual(abs(animated.z - creature.positionScale.z), 1.5001)
+            }
+            XCTAssertEqual(
+                CreatureAnimation.animatedPositionScale(base: creature, time: 1.7),
+                CreatureAnimation.animatedPositionScale(base: creature, time: 1.7)
+            )
+            XCTAssertNotEqual(
+                CreatureAnimation.animatedPositionScale(base: creature, time: 0),
+                CreatureAnimation.animatedPositionScale(base: creature, time: 1)
+            )
         }
     }
 

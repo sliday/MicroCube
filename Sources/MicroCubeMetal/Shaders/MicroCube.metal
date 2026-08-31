@@ -463,13 +463,25 @@ kernel void raycastHybrid(
         lighting *= hit.normal.y > 0.0f ? 1.0f : (hit.normal.y < 0.0f ? 0.62f : (hit.normal.x != 0.0f ? 0.82f : 0.9f));
         if (hit.primitiveKind == 0u) {
             lighting *= voxelAO(volume, point, hit.normal);
-            int3 rimBase = int3(clamp(point + float3(0.0f, 5.0f, 0.0f), float3(0.0f), float3(511.0f)));
+            // Pocket sky-occlusion: 16 fine occupancy taps in a ring above the
+            // hit point (two heights, two radii, four directions, mip 1), with
+            // the darkening blended continuously from the occlusion fraction.
+            // The old 4-tap version flipped a binary gate on a mip-2 cell
+            // count, which stamped hard world-space shadow polygons across
+            // faces, tops, and air gaps alike.
             float enclosure = 0.0f;
-            enclosure += volume.read(uint3(clamp(rimBase + int3(8, 0, 0), int3(0), int3(511))) >> 2, 2u).x != 0u ? 0.25f : 0.0f;
-            enclosure += volume.read(uint3(clamp(rimBase + int3(-8, 0, 0), int3(0), int3(511))) >> 2, 2u).x != 0u ? 0.25f : 0.0f;
-            enclosure += volume.read(uint3(clamp(rimBase + int3(0, 0, 8), int3(0), int3(511))) >> 2, 2u).x != 0u ? 0.25f : 0.0f;
-            enclosure += volume.read(uint3(clamp(rimBase + int3(0, 0, -8), int3(0), int3(511))) >> 2, 2u).x != 0u ? 0.25f : 0.0f;
-            lighting *= 1.0f - max(0.0f, enclosure - 0.25f) * 0.7f;
+            for (uint tapHeight = 0u; tapHeight < 2u; ++tapHeight) {
+                float probeY = tapHeight == 0u ? 4.0f : 7.0f;
+                int3 rimBase = int3(clamp(point + float3(0.0f, probeY, 0.0f), float3(0.0f), float3(511.0f)));
+                for (uint tapRadius = 0u; tapRadius < 2u; ++tapRadius) {
+                    int lateral = tapRadius == 0u ? 5 : 9;
+                    enclosure += volume.read(uint3(clamp(rimBase + int3(lateral, 0, 0), int3(0), int3(511))) >> 1, 1u).x != 0u ? 0.0625f : 0.0f;
+                    enclosure += volume.read(uint3(clamp(rimBase + int3(-lateral, 0, 0), int3(0), int3(511))) >> 1, 1u).x != 0u ? 0.0625f : 0.0f;
+                    enclosure += volume.read(uint3(clamp(rimBase + int3(0, 0, lateral), int3(0), int3(511))) >> 1, 1u).x != 0u ? 0.0625f : 0.0f;
+                    enclosure += volume.read(uint3(clamp(rimBase + int3(0, 0, -lateral), int3(0), int3(511))) >> 1, 1u).x != 0u ? 0.0625f : 0.0f;
+                }
+            }
+            lighting *= 1.0f - smoothstep(0.28f, 0.85f, enclosure) * 0.55f;
         }
 
         if ((shadowsEnabled || evidenceView == 7u) && !isGlass && diffuse > 0.0f) {

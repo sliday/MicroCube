@@ -142,10 +142,13 @@ final class VolumeProbeTests: XCTestCase {
             Light light = lights[0];
             SDFInstance moved = animateSDFInstance(creature, time);
             Light animated = animateLight(light, 0u, time);
+            // Creature position is CPU-animated (CreatureAnimation); the
+            // shader-side pose that still varies with time is the limb gait
+            // phase, so slot 3 pins that instead of the (static) quaternion.
             output[0] = moved.positionScale.x;
             output[1] = moved.positionScale.y;
             output[2] = moved.positionScale.z;
-            output[3] = moved.rotationQuaternion.w;
+            output[3] = moved.parameters.z;
             output[4] = animated.positionRadius.x;
             output[5] = animated.positionRadius.y;
             output[6] = animated.positionRadius.z;

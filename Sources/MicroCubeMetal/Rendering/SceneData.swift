@@ -87,7 +87,10 @@ struct SceneData {
             (232, 73, 356),
             (292, 79, 254),
             (268, 86, 338),
-            (344, 74, 360)
+            // Beacon cluster: crowns the far hill summit visible through the
+            // ridge gap from the tour's THE RIDGE section, so the gap on the
+            // horizon holds a glow the walk can steer toward.
+            (260, 104, 208)
         ]
         let shroomScale: Float = 2.4
         let shroomClusters = shroomSpots.enumerated().map { index, spot -> SDFInstance in

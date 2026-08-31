@@ -441,6 +441,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             adjustRenderScaleIfNeeded()
             updateDrawableSize(view)
         }
+        updateCreatureInstances(time: Float(sceneTime.truncatingRemainder(dividingBy: 4_096.0)))
 
         guard view.drawableSize.width >= 1.0, view.drawableSize.height >= 1.0 else {
             failQA("The requested drawable size is empty.", droppedDrawable: true)
@@ -1004,6 +1005,23 @@ final class Renderer: NSObject, MTKViewDelegate {
             min(maximum, max(minimum, cameraPosition.y)),
             min(maximum, max(minimum, cameraPosition.z))
         )
+    }
+
+    /// Writes CPU-animated, terrain-re-grounded creature positions into the
+    /// shared SDF instance buffer. Uses the same wrapped time the shader
+    /// receives, so shader-side gait and light animation stay in phase.
+    /// Static sweptBounds cover the whole wander footprint including the
+    /// grounding delta (verified per creature: slack exceeds the local
+    /// terrain variation by more than 8 units).
+    private func updateCreatureInstances(time: Float) {
+        let scene = sceneResources.scene
+        let pointer = sceneResources.sdfInstances.contents()
+            .bindMemory(to: SDFInstance.self, capacity: scene.sdfInstances.count)
+        for (index, base) in scene.sdfInstances.enumerated() where base.metadata.x == 1 {
+            pointer[index].positionScale = CreatureAnimation.animatedPositionScale(
+                base: base, time: time
+            )
+        }
     }
 
     private func makeUniforms(
