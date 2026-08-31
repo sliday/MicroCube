@@ -54,12 +54,12 @@ struct SceneData {
             metadata: SIMD4<UInt32>(4, 4, 0, 8)
         )
         let creatureCenters = [
-            SIMD3<Float>(270, 97.44, 292),
-            SIMD3<Float>(281, 98.44, 300),
-            SIMD3<Float>(293, 103.44, 294),
-            SIMD3<Float>(270, 98.44, 315),
-            SIMD3<Float>(287, 96.44, 316),
-            SIMD3<Float>(299, 111.44, 308)
+            SIMD3<Float>(270, 93.96, 292),
+            SIMD3<Float>(281, 94.96, 300),
+            SIMD3<Float>(293, 99.96, 294),
+            SIMD3<Float>(270, 94.96, 315),
+            SIMD3<Float>(287, 92.96, 316),
+            SIMD3<Float>(299, 107.96, 308)
         ]
         let creatures = creatureCenters.enumerated().map { index, center in
             let anchorScaledCenter = scalePoint(center)
@@ -70,13 +70,13 @@ struct SceneData {
                 sweptBoundsMin: SIMD4<Float>(scaledBoundsMin, 0),
                 sweptBoundsMax: SIMD4<Float>(
                     scaledBoundsMax.x,
-                    max(scaledBoundsMax.y, creatureCenter.y + 18 * 0.55 + 4.5 * 0.48 + 0.22),
+                    max(scaledBoundsMax.y, creatureCenter.y + 12 * 0.55 + 3 * 0.48 + 0.22),
                     scaledBoundsMax.z,
                     0
                 ),
-                positionScale: SIMD4<Float>(creatureCenter, 4.5),
+                positionScale: SIMD4<Float>(creatureCenter, 3),
                 rotationQuaternion: SIMD4<Float>(0, 0, 0, 1),
-                parameters: SIMD4<Float>(18, Float(index) * 0.83, 0, 0),
+                parameters: SIMD4<Float>(12, Float(index) * 0.83, 0, 0),
                 metadata: SIMD4<UInt32>(1, 3, 1, UInt32(index + 2))
             )
         }

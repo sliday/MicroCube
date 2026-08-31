@@ -77,8 +77,8 @@ final class SceneDataTests: XCTestCase {
 
             XCTAssertEqual(creature.positionScale.x, expectedPosition.x, accuracy: 0.0001)
             XCTAssertEqual(creature.positionScale.z, expectedPosition.y, accuracy: 0.0001)
-            XCTAssertEqual(creature.positionScale.w, 4.5, accuracy: 0.0001)
-            XCTAssertEqual(creature.parameters.x, 18, accuracy: 0.0001)
+            XCTAssertEqual(creature.positionScale.w, 3, accuracy: 0.0001)
+            XCTAssertEqual(creature.parameters.x, 12, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.x, creature.positionScale.x, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.y - creature.positionScale.y, 6.3, accuracy: 0.0001)
             XCTAssertEqual(light.positionRadius.z, creature.positionScale.z, accuracy: 0.0001)
