@@ -868,7 +868,7 @@ inline float voxelAO(texture3d<uint, access::read> volume, float3 point, float3 
     float ao01 = vertexAO(sideANegative, sideBPositive, occupancy(volume, base - tangentA + tangentB));
     float ao11 = vertexAO(sideAPositive, sideBPositive, occupancy(volume, base + tangentA + tangentB));
     float ao = mix(mix(ao00, ao10, fraction.x), mix(ao01, ao11, fraction.x), fraction.y) / 3.0f;
-    return mix(0.16f, 1.0f, ao);
+    return mix(normal.y > 0.5f ? 0.45f : 0.16f, 1.0f, ao);
 }
 
 constant float3 kFogColor = float3(0.44f, 0.47f, 0.52f);

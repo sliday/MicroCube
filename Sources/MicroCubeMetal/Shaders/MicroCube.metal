@@ -497,17 +497,27 @@ kernel void raycastHybrid(
             : materials[materialIndex].baseColorRoughness.xyz;
         float structure = 0.5f;
         if (hit.primitiveKind == 0u) {
-            if (hit.normal.y > 0.5f && hit.material >= 1u && hit.material <= 42u) {
-                uint band = (hit.material - 1u) / 3u;
-                baseColor = kPalette[1u + band * 3u + 1u];
+            if (hit.material >= 1u && hit.material <= 42u) {
+                float level = (point.y - 40.0f) / 64.0f
+                    + (valueNoise((point.x - 256.0f) / 24.0f, (point.z - 256.0f) / 24.0f, 31) - 0.5f) * 0.28f;
+                float bandF = clamp(level * 14.0f, 0.0f, 13.0f);
+                float lower = floor(bandF);
+                uint bandA = uint(lower);
+                uint bandB = min(bandA + 1u, 13u);
+                baseColor = mix(
+                    kPalette[1u + bandA * 3u + 1u],
+                    kPalette[1u + bandB * 3u + 1u],
+                    bandF - lower
+                );
             }
-            float patch = noise3D(point.x * 0.6f, point.y * 0.6f, point.z * 0.6f, 89);
-            float fine = noise3D(point.x * 1.9f, point.y * 1.9f, point.z * 1.9f, 83);
+            float noiseY = hit.normal.y > 0.5f ? 0.0f : point.y;
+            float patch = noise3D(point.x * 0.6f, noiseY * 0.6f, point.z * 0.6f, 89);
+            float fine = noise3D(point.x * 1.9f, noiseY * 1.9f, point.z * 1.9f, 83);
             float speckle = hash2(
-                int(floor(point.x * 3.0f)) * 131 + int(floor(point.y * 3.0f)),
+                int(floor(point.x * 3.0f)) * 131 + int(floor(noiseY * 3.0f)),
                 int(floor(point.z * 3.0f)), 97
             );
-            float grain = noise3D(point.x * 5.5f, point.y * 5.5f, point.z * 5.5f, 79);
+            float grain = noise3D(point.x * 5.5f, noiseY * 5.5f, point.z * 5.5f, 79);
             float breakup = patch * 0.62f + fine * 0.28f + speckle * 0.10f;
             breakup = breakup * breakup * (3.0f - 2.0f * breakup);
             baseColor *= 0.62f + breakup * 0.76f;
@@ -523,9 +533,9 @@ kernel void raycastHybrid(
                 structure = 0.5f + (grain - 0.5f) * 0.32f;
             } else {
                 float horiz = hit.normal.x != 0.0f ? point.z : point.x;
-                int column = int(floor(horiz * 1.1f));
+                int column = int(floor(horiz));
                 float columnHash = hash2(column, 0, 113);
-                float columnFrac = fract(horiz * 1.1f);
+                float columnFrac = fract(horiz);
                 float jointEdge = min(columnFrac, 1.0f - columnFrac);
                 float jointDepth = 0.16f + fract(columnHash * 5.7f) * 0.26f;
                 float jointMask = columnHash > 0.58f ? saturate(1.0f - jointEdge / 0.05f) : 0.0f;
