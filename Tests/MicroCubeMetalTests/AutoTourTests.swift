@@ -9,14 +9,14 @@ final class AutoTourTimelineTests: XCTestCase {
         let timeline = AutoTourTimeline()
         let cases: [(TimeInterval, Int, EvidenceView)] = [
             (0, 0, .final),
-            (8, 1, .final),
-            (17, 2, .grid),
-            (22, 3, .pyramid),
-            (27, 4, .steps),
-            (32, 5, .cost),
-            (36, 6, .final),
-            (42, 7, .final),
-            (48, 0, .final),
+            (12, 1, .final),
+            (24, 2, .final),
+            (36, 3, .final),
+            (48, 4, .final),
+            (60, 5, .final),
+            (72, 6, .final),
+            (84, 7, .final),
+            (96, 0, .final),
         ]
 
         for (time, sectionID, evidenceView) in cases {
@@ -43,7 +43,7 @@ final class AutoTourTimelineTests: XCTestCase {
         let fixed = timeline.sample(at: 13.25)
         XCTAssertEqual(fixed, timeline.sample(at: 13.25))
 
-        for index in 0...4_800 {
+        for index in 0...9_600 {
             let sample = timeline.sample(at: Double(index) / 100)
             for value in [
                 sample.cameraPosition.x, sample.cameraPosition.y, sample.cameraPosition.z,
@@ -63,7 +63,7 @@ final class AutoTourControllerTests: XCTestCase {
     func testEligibleControllerCancelsOnceAndRestartResetsElapsedTime() {
         var controller = AutoTourController(policy: .enabled, startTime: 100)
         XCTAssertEqual(controller.state, .active)
-        XCTAssertEqual(controller.sample(at: 108)?.sectionID, 1)
+        XCTAssertEqual(controller.sample(at: 115)?.sectionID, 1)
 
         let handoff = controller.takeControl()
 
@@ -76,7 +76,7 @@ final class AutoTourControllerTests: XCTestCase {
 
         XCTAssertEqual(restarted?.sectionID, 0)
         XCTAssertEqual(controller.state, .active)
-        XCTAssertEqual(controller.sample(at: 208)?.sectionID, 1)
+        XCTAssertEqual(controller.sample(at: 215)?.sectionID, 1)
     }
 
     func testDisabledPoliciesRejectRestart() {
@@ -163,7 +163,7 @@ final class AutoTourIntegrationTests: XCTestCase {
         let opening = try XCTUnwrap(renderer.currentAutoTourSample())
 
         XCTAssertEqual(renderer.currentAutoTourState(), .active)
-        XCTAssertEqual(delegate.controlLegendText, "AUTO TOUR · FINE VOXEL TERRAIN\nMOVE OR CLICK TO TAKE CONTROL")
+        XCTAssertEqual(delegate.controlLegendText, "AUTO TOUR · THE SHORE\nMOVE OR CLICK TO TAKE CONTROL")
         XCTAssertEqual(announcements, ["Automatic tour started."])
 
         delegate.handleRenderAction(.toggleExplainer)
@@ -209,7 +209,7 @@ final class AutoTourIntegrationTests: XCTestCase {
         XCTAssertFalse(snapshot.keys.contains(13))
         XCTAssertFalse(snapshot.speedBoost)
         XCTAssertEqual(delegate.renderState.evidenceView, .final)
-        XCTAssertEqual(delegate.controlLegendText, "AUTO TOUR · FINE VOXEL TERRAIN\nMOVE OR CLICK TO TAKE CONTROL")
+        XCTAssertEqual(delegate.controlLegendText, "AUTO TOUR · THE SHORE\nMOVE OR CLICK TO TAKE CONTROL")
         XCTAssertEqual(announcements.last, "Automatic tour started.")
     }
 
@@ -399,6 +399,6 @@ final class AutoTourIntegrationTests: XCTestCase {
         wait(for: [callbacksFinished], timeout: 2)
 
         XCTAssertEqual(renderer.currentAutoTourState(), .active)
-        XCTAssertEqual(delegate.controlLegendText, "AUTO TOUR · FINE VOXEL TERRAIN\nMOVE OR CLICK TO TAKE CONTROL")
+        XCTAssertEqual(delegate.controlLegendText, "AUTO TOUR · THE SHORE\nMOVE OR CLICK TO TAKE CONTROL")
     }
 }

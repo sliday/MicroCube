@@ -67,64 +67,70 @@ struct AutoTourTimeline {
         let sectionTitle: String
     }
 
-    let duration: TimeInterval = 48
+    let duration: TimeInterval = 96
 
+    // An island walk. Camera x/z follows these stations; the y stored here is
+    // informational — sample() re-grounds the camera on TerrainField each
+    // frame so the tour rides the terrain at eye level. Look targets reference
+    // live scene content: the sea plane (y 52), creature centers and shroom
+    // cluster centers from SceneData.makeHero, and the warm sky window
+    // azimuth (sun bearing ~ -2.75 rad).
     private static let waypoints = [
         Waypoint(
             time: 0,
-            cameraPosition: SIMD3<Float>(240.75, 117, 233.75),
-            lookAtTarget: SIMD3<Float>(280, 104, 291),
+            cameraPosition: SIMD3<Float>(282, 60.7, 158),
+            lookAtTarget: SIMD3<Float>(255, 52.5, 135),
             evidenceView: .final,
-            sectionTitle: "FINE VOXEL TERRAIN"
+            sectionTitle: "THE SHORE"
         ),
         Waypoint(
-            time: 8,
-            cameraPosition: SIMD3<Float>(247, 103, 255),
-            lookAtTarget: SIMD3<Float>(278, 99, 301),
+            time: 12,
+            cameraPosition: SIMD3<Float>(266, 62, 152),
+            lookAtTarget: SIMD3<Float>(238, 52.5, 148),
             evidenceView: .final,
-            sectionTitle: "FOG CREATURES + MOVING LIGHTS"
+            sectionTitle: "ALONG THE WATER"
         ),
         Waypoint(
-            time: 17,
-            cameraPosition: SIMD3<Float>(270, 134, 258),
-            lookAtTarget: SIMD3<Float>(288, 104, 303),
-            evidenceView: .grid,
-            sectionTitle: "MIXED WORLD GRID"
-        ),
-        Waypoint(
-            time: 22,
-            cameraPosition: SIMD3<Float>(254, 150, 284),
-            lookAtTarget: SIMD3<Float>(288, 100, 302),
-            evidenceView: .pyramid,
-            sectionTitle: "OCCUPANCY PYRAMID"
-        ),
-        Waypoint(
-            time: 27,
-            cameraPosition: SIMD3<Float>(235, 121, 300),
-            lookAtTarget: SIMD3<Float>(296, 102, 303),
-            evidenceView: .steps,
-            sectionTitle: "RAY STEPS"
-        ),
-        Waypoint(
-            time: 32,
-            cameraPosition: SIMD3<Float>(280, 118, 245),
-            lookAtTarget: SIMD3<Float>(286, 107, 305),
-            evidenceView: .cost,
-            sectionTitle: "TRAVERSAL COST"
+            time: 24,
+            cameraPosition: SIMD3<Float>(252, 95.3, 252),
+            lookAtTarget: SIMD3<Float>(262.5, 92, 297.5),
+            evidenceView: .final,
+            sectionTitle: "SOMETHING IN THE FOG"
         ),
         Waypoint(
             time: 36,
-            cameraPosition: SIMD3<Float>(315, 116, 270),
-            lookAtTarget: SIMD3<Float>(286.5, 115.5, 306.5),
+            cameraPosition: SIMD3<Float>(255, 83.6, 272),
+            lookAtTarget: SIMD3<Float>(288, 96, 311),
             evidenceView: .final,
-            sectionTitle: "GLASS + LIT FOG"
+            sectionTitle: "THE WATCHERS"
         ),
         Waypoint(
-            time: 42,
-            cameraPosition: SIMD3<Float>(315, 138, 345),
-            lookAtTarget: SIMD3<Float>(261, 126, 359),
+            time: 48,
+            cameraPosition: SIMD3<Float>(290, 92.6, 268),
+            lookAtTarget: SIMD3<Float>(274, 80.5, 278),
             evidenceView: .final,
-            sectionTitle: "SDF FRACTAL ORBIT"
+            sectionTitle: "THE GLOW BELOW"
+        ),
+        Waypoint(
+            time: 60,
+            cameraPosition: SIMD3<Float>(279, 85.8, 273),
+            lookAtTarget: SIMD3<Float>(250, 87.5, 284),
+            evidenceView: .final,
+            sectionTitle: "AMONG THE LANTERNS"
+        ),
+        Waypoint(
+            time: 72,
+            cameraPosition: SIMD3<Float>(306, 95.2, 289),
+            lookAtTarget: SIMD3<Float>(291, 107, 252),
+            evidenceView: .final,
+            sectionTitle: "THE RIDGE"
+        ),
+        Waypoint(
+            time: 84,
+            cameraPosition: SIMD3<Float>(295, 79, 225),
+            lookAtTarget: SIMD3<Float>(282, 53, 160),
+            evidenceView: .final,
+            sectionTitle: "BACK TO THE SEA"
         ),
     ]
 
@@ -153,14 +159,16 @@ struct AutoTourTimeline {
         let eased = fraction * fraction * (3 - 2 * fraction)
         let waypoint = Self.waypoints[sectionID]
 
+        var cameraPosition = catmullRom(
+            Self.waypoints[previousID].cameraPosition,
+            waypoint.cameraPosition,
+            Self.waypoints[nextID].cameraPosition,
+            Self.waypoints[followingID].cameraPosition,
+            t: eased
+        )
+        cameraPosition.y = TerrainField.smoothHeight(x: cameraPosition.x, z: cameraPosition.z) + 1.8
         return AutoTourSample(
-            cameraPosition: catmullRom(
-                Self.waypoints[previousID].cameraPosition,
-                waypoint.cameraPosition,
-                Self.waypoints[nextID].cameraPosition,
-                Self.waypoints[followingID].cameraPosition,
-                t: eased
-            ),
+            cameraPosition: cameraPosition,
             lookAtTarget: catmullRom(
                 Self.waypoints[previousID].lookAtTarget,
                 waypoint.lookAtTarget,

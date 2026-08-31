@@ -982,14 +982,20 @@ final class Renderer: NSObject, MTKViewDelegate {
         if snapshot.keys.contains(KeyCode.s) { movement -= horizontalForward }
         if snapshot.keys.contains(KeyCode.d) { movement += right }
         if snapshot.keys.contains(KeyCode.a) { movement -= right }
-        if snapshot.keys.contains(KeyCode.e) { movement.y += 1.0 }
-        if snapshot.keys.contains(KeyCode.q) { movement.y -= 1.0 }
 
         let movementLength = simd_length(movement)
         if movementLength > 0.0 {
-            let speed: Float = 18.0 * (snapshot.speedBoost ? 1.9 : 1.0)
-            cameraPosition += movement / movementLength * speed * deltaTime
+            let speed: Float = 4.2 * (snapshot.speedBoost ? 1.75 : 1.0)
+            let step = movement / movementLength * speed * deltaTime
+            let candidate = cameraPosition + step
+            if TerrainField.smoothHeight(x: candidate.x, z: candidate.z) > TerrainField.seaLevel + 0.4 {
+                cameraPosition.x = candidate.x
+                cameraPosition.z = candidate.z
+            }
         }
+
+        let eyeTarget = TerrainField.smoothHeight(x: cameraPosition.x, z: cameraPosition.z) + 1.7
+        cameraPosition.y += (eyeTarget - cameraPosition.y) * min(1.0, deltaTime * 9.0)
 
         let minimum: Float = 1.25
         let maximum = Float(Renderer.worldSize) - minimum
