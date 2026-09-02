@@ -11,7 +11,12 @@ reference demo at the same camera pose.
 
 ## Run it
 
-ES modules will not load over `file://`, so serve the repository and open the port through http:
+The deployed build is at <https://microcube.stas6236.workers.dev>. It serves this port at the root,
+upstream's CPU original at `/cpu/`, and upstream's WebGPU variant at `/webgpu/`, so you can compare
+the three renderers of the same world.
+
+To run it locally: ES modules will not load over `file://`, so serve the repository and open the
+port through http:
 
 ```sh
 python3 -m http.server 8000

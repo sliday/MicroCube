@@ -124,6 +124,8 @@ This repository does not publish a performance number because GPU model, drawabl
 
 ## Bonus: three.js port
 
+Live demo: <https://microcube.stas6236.workers.dev> (the CPU original is at `/cpu/`, upstream's WebGPU variant at `/webgpu/`).
+
 `bonus/threejs/` holds a second port of the same demo, this one for the browser. It keeps the upstream terrain, palette, physics and controls, and moves the hierarchical DDA out of the CPU pixel loop into a three.js `RawShaderMaterial` that traverses an `R8UI` 3D texture and a packed occupancy pyramid. Serve the repository over http and open <http://localhost:8000/bonus/threejs/>:
 
 ```sh
