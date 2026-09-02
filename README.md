@@ -122,6 +122,16 @@ Use the release app for comparisons:
 
 This repository does not publish a performance number because GPU model, drawable size, refresh rate, and camera view change the result.
 
+## Bonus: three.js port
+
+`bonus/threejs/` holds a second port of the same demo, this one for the browser. It keeps the upstream terrain, palette, physics and controls, and moves the hierarchical DDA out of the CPU pixel loop into a three.js `RawShaderMaterial` that traverses an `R8UI` 3D texture and a packed occupancy pyramid. Serve the repository over http and open <http://localhost:8000/bonus/threejs/>:
+
+```sh
+python3 -m http.server 8000
+```
+
+ES modules refuse to load from `file://`, and three.js arrives from a CDN through the import map in `bonus/threejs/index.html`. The grid is 256³ by default and reads `?n=512` from the URL. Two tests run under plain `node` with nothing installed: `test/fidelity.mjs` compares the ported terrain against a verbatim copy of upstream, and `test/glsl-lint.mjs` checks the assembled fragment shader. This port runs wherever WebGL2 does, which the Metal port cannot claim. It also writes `gl_FragDepth` from the hit distance, so ordinary three.js meshes composite against the voxel field: the demo scene puts a torus knot and a ring of emissive cubes near spawn, and a hill in front of them occludes them. See [bonus/threejs/README.md](bonus/threejs/README.md).
+
 ## Upstream
 
 [@vseplet](https://github.com/vseplet) created the original [microcube browser demo](https://github.com/vseplet/microcube). The upstream `index.html` remains in this repository as the reference implementation.

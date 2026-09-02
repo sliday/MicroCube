@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MicroCube three.js port</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0c10; color: #dfe6f2; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #cv { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+  /* main.js adds .pixelated (on <body> or on the canvas) when render scale < 1,
+     so the chunky upstream look survives the upscale. */
+  body.pixelated #cv, #cv.pixelated { image-rendering: pixelated; }
+  #hud { position: fixed; left: 8px; top: 6px; font: 12px/1.4 monospace; white-space: pre; text-shadow: 0 0 3px #000, 0 0 3px #000; pointer-events: none; }
+  #aim { position: fixed; left: 50%; top: 50%; width: 9px; height: 9px; margin: -5px 0 0 -5px; pointer-events: none;
+         border: 1px solid rgba(255,255,255,.85); border-radius: 50%; mix-blend-mode: difference; }
+  #panel { position: fixed; right: 8px; top: 8px; width: 270px; }
+  #credit { position: fixed; left: 8px; bottom: 6px; font: 11px/1.4 monospace; color: #7d8798; text-shadow: 0 0 3px #000, 0 0 3px #000; }
+  #credit a { color: #9fb2cc; }
+  #boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+          background: #0a0c10; font: 13px/1.4 monospace; color: #dfe6f2; letter-spacing: .04em; z-index: 10; }
+  body.clean #panel, body.clean #hud, body.clean #credit { display: none; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="cv"></canvas><div id="hud"></div><div id="aim"></div><div id="panel"></div>
+<div id="credit">three.js port of <a href="https://github.com/vseplet/microcube" target="_blank" rel="noopener">MicroCube</a> by @vseplet &middot; AGPL-3.0</div>
+<div id="boot">generating world...</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
